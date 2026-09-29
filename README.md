@@ -29,16 +29,11 @@ Dépôt : [https://github.com/MAKUI237/myhotel](https://github.com/MAKUI237/myho
 
 ## Hébergement Vercel
 
-1. Importer le dépôt sur [vercel.com/new](https://vercel.com/new).
-2. Framework : **Other**.
-3. Build Command : `npx expo export -p web` (déjà dans `vercel.json`).
-4. Output Directory : `dist`.
-5. Déployer.
+1. Importer [MAKUI237/myhotel](https://github.com/MAKUI237/myhotel) sur [vercel.com/new](https://vercel.com/new).
+2. Framework Preset : **Other**.
+3. Build Command : `npx expo export -p web`
+4. Output Directory : `dist`
+5. Root Directory : `.` (la racine du dépôt, pas un sous-dossier).
+6. Attendez le statut **Ready**, puis ouvrez l’URL **Production** (pas un lien Preview expiré).
 
-Le site web statique est servi depuis `dist`. L’API SQLite est exposée sur `/api` (sql.js). Sur Vercel le fichier SQLite vit dans `/tmp` : les données se réinitialisent à chaque cold start.
-
-Option CLI :
-
-```bash
-npx vercel@latest
-```
+`DEPLOYMENT_NOT_FOUND` apparaît si le build a échoué ou si l’URL n’est pas celle du dernier déploiement Ready. Dans Vercel : Project → Deployments → ouvrir le déploiement vert.
