@@ -32,6 +32,7 @@ yarn-error.*
 
 # local env files
 .env*.local
+.vercel
 
 # typescript
 *.tsbuildinfo
@@ -41,3 +42,9 @@ example
 # generated native folders
 /ios
 /android
+
+# SQLite
+backend/data/*.sqlite
+backend/data/*.sqlite-*
+server/data/*.sqlite
+server/data/*.sqlite-*
