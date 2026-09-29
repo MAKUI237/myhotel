@@ -69,7 +69,8 @@ export const Radius = {
 } as const;
 
 export const Breakpoints = {
-  desktop: 880,
+  desktop: 1100,
+  tablet: 760,
 } as const;
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;

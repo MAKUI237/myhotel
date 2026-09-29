@@ -17,6 +17,7 @@ import { PhotoCropModal } from '@/components/profile/photo-crop-modal';
 import { UserAvatar } from '@/components/profile/user-avatar';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const MONTHS = [
@@ -81,6 +82,7 @@ function monthCells(year: number, month: number, createdAt?: string | null) {
 type ModalKind = 'name' | 'password' | null;
 
 export function ProfilePanel({ onClose }: { onClose: () => void }) {
+  const router = useRouter();
   const { user, logout, updateProfile, updatePassword } = useAuth();
   const [cursor, setCursor] = useState(() => new Date());
   const [modal, setModal] = useState<ModalKind>(null);
@@ -306,7 +308,15 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
         <Pressable onPress={onClose} style={styles.ghost}>
           <Text style={styles.ghostText}>Fermer</Text>
         </Pressable>
-        <Pressable onPress={() => void logout()} style={styles.logout}>
+        <Pressable
+          onPress={() => {
+            void (async () => {
+              onClose();
+              await logout();
+              router.replace('/welcome');
+            })();
+          }}
+          style={styles.logout}>
           <AppIcon name="log-out" size={16} color={Palette.ink} />
           <Text style={styles.logoutText}>Déconnexion</Text>
         </Pressable>

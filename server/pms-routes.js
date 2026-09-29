@@ -95,7 +95,7 @@ async function handlePms(req, res, ctx) {
       vip_tasks: db.all('SELECT * FROM vip_tasks ORDER BY scheduled_at'),
       transfers: db.all('SELECT * FROM room_transfers ORDER BY at DESC'),
       charges: db.all('SELECT * FROM folio_charges ORDER BY at DESC'),
-      rooms: db.all('SELECT id, number, type, floor, status, price_night FROM rooms ORDER BY number'),
+      rooms: db.all('SELECT id, number, type, floor, status, price_night, photo, video FROM rooms ORDER BY number'),
       guests: db.all('SELECT * FROM guests ORDER BY full_name'),
     });
     return true;
@@ -317,6 +317,18 @@ async function handlePms(req, res, ctx) {
     const id = Number(pathName.split('/')[3]);
     db.run('UPDATE reservations SET confirmed = 1, status = ? WHERE id = ?', ['confirmee', id]);
     ok(res, { id }, 'Réservation confirmée.');
+    return true;
+  }
+
+  if (method === 'POST' && pathName.match(/^\/pms\/reservations\/(\d+)\/cancel$/)) {
+    const id = Number(pathName.split('/')[3]);
+    const resv = db.get(
+      `SELECT r.*, rm.number AS room_number FROM reservations r JOIN rooms rm ON rm.id = r.room_id WHERE r.id = ?`,
+      [id],
+    );
+    db.run("UPDATE reservations SET status = 'annulee', confirmed = 0 WHERE id = ?", [id]);
+    if (resv) db.run("UPDATE rooms SET status = 'disponible' WHERE id = ?", [resv.room_id]);
+    ok(res, { id }, 'Réservation annulée.');
     return true;
   }
 
@@ -553,6 +565,52 @@ async function handlePms(req, res, ctx) {
       body.task || '',
     ]);
     ok(res, { id: db.lastId() }, 'Vacation planifiée.', 201);
+    return true;
+  }
+
+  if (method === 'POST' && pathName === '/pms/rooms/save') {
+    const body = await readBody(req);
+    if (body.id) {
+      db.run(
+        'UPDATE rooms SET number=?, type=?, floor=?, price_night=?, capacity=?, photo=?, video=?, description=?, status=? WHERE id=?',
+        [
+          body.number,
+          body.type,
+          Number(body.floor || 1),
+          Number(body.price_night || 0),
+          Number(body.capacity || 2),
+          body.photo,
+          body.video || null,
+          body.description || '',
+          body.status || 'disponible',
+          Number(body.id),
+        ],
+      );
+      ok(res, { id: body.id }, 'Chambre enregistrée.');
+      return true;
+    }
+    db.run(
+      'INSERT INTO rooms (number, type, floor, status, price_night, capacity, photo, description, video) VALUES (?,?,?,?,?,?,?,?,?)',
+      [
+        body.number,
+        body.type || 'Standard',
+        Number(body.floor || 1),
+        'disponible',
+        Number(body.price_night || 0),
+        Number(body.capacity || 2),
+        body.photo || 'https://images.unsplash.com/photo-1611892440504-42a792e24d32?w=1200&q=80',
+        body.description || '',
+        body.video || null,
+      ],
+    );
+    ok(res, { id: db.lastId() }, 'Chambre créée.', 201);
+    return true;
+  }
+
+  if (method === 'POST' && pathName === '/pms/rooms/delete') {
+    const body = await readBody(req);
+    db.run('DELETE FROM rooms WHERE id = ?', [Number(body.id)]);
+    ok(res, { id: body.id }, 'Chambre supprimée.');
     return true;
   }
 

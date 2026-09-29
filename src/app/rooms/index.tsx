@@ -1,12 +1,11 @@
 import { Redirect, useRouter, type Href } from 'expo-router';
 import { Image } from 'expo-image';
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 
-import { AppIcon, type BoxIconName } from '@/components/box-icon';
 import { HotelShell, StatusBadge } from '@/components/hotel/hotel-shell';
 import { Chips, GoldBtn } from '@/components/hotel/kit';
-import { Breakpoints, Palette, Radius } from '@/constants/theme';
+import { Palette, Radius } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { pmsPost, roomsRequest, type Room } from '@/lib/api';
 import { money, roomStatusLabel } from '@/lib/format';
@@ -21,19 +20,17 @@ export default function RoomsScreen() {
   const router = useRouter();
   const { user, ready, token } = useAuth();
   const { width } = useWindowDimensions();
-  const isDesktop = width >= Breakpoints.desktop;
   const [rooms, setRooms] = useState<Room[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [type, setType] = useState('all');
+  const [form, setForm] = useState({ number: '', type: 'Deluxe', price_night: '72000', photo: '', video: '' });
   const canManage = user?.role === 'manager' || user?.role === 'owner';
-  const canFront = canManage || user?.role === 'receptionist';
 
   async function load() {
     if (!token) return;
     try {
-      const data = await roomsRequest(token);
-      setRooms(data);
+      setRooms(await roomsRequest(token));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Chargement impossible.');
@@ -51,65 +48,53 @@ export default function RoomsScreen() {
 
   const types = useMemo(() => ['all', ...Array.from(new Set(rooms.map((r) => r.type)))], [rooms]);
   const visible = rooms.filter((r) => type === 'all' || r.type === type);
-  const columns = width >= 1180 ? 3 : width >= 760 ? 2 : 1;
-  const gutter = isDesktop ? 32 : 16;
-  const max = Math.min(width, 1320);
-  const cardWidth = Math.floor((max - gutter * 2 - (columns - 1) * 16) / columns);
+  const columns = width >= 1180 ? 3 : width >= 720 ? 2 : 1;
+  const cardWidth = Math.floor((Math.min(width, 1200) - 36 - (columns - 1) * 16) / columns);
 
   return (
-    <HotelShell
-      title="Gestion des chambres"
-      subtitle="Types, photos, tarifs FCFA, indisponibilité et urgence entretien"
-      loading={loading}
-      error={error}>
-      <Chips
-        value={type}
-        onChange={setType}
-        options={types.map((id) => ({ id, label: id === 'all' ? 'Tous les types' : id }))}
-      />
+    <HotelShell title="Chambres" subtitle="Photos, types, tarifs FCFA et vidéo de présentation" loading={loading} error={error}>
+      <Chips value={type} onChange={setType} options={types.map((id) => ({ id, label: id === 'all' ? 'Tous' : id }))} />
+      {canManage && token ? (
+        <View style={styles.form}>
+          <Text style={styles.formTitle}>Ajouter une chambre</Text>
+          <TextInput placeholder="Numéro" value={form.number} onChangeText={(v) => setForm({ ...form, number: v })} style={styles.input} />
+          <TextInput placeholder="Type" value={form.type} onChangeText={(v) => setForm({ ...form, type: v })} style={styles.input} />
+          <TextInput placeholder="Prix / nuit FCFA" value={form.price_night} onChangeText={(v) => setForm({ ...form, price_night: v })} keyboardType="numeric" style={styles.input} />
+          <TextInput placeholder="URL photo" value={form.photo} onChangeText={(v) => setForm({ ...form, photo: v })} style={styles.input} />
+          <TextInput placeholder="URL vidéo (optionnel)" value={form.video} onChangeText={(v) => setForm({ ...form, video: v })} style={styles.input} />
+          <GoldBtn
+            label="Enregistrer"
+            onPress={() =>
+              void pmsPost(token, 'rooms/save', {
+                ...form,
+                price_night: Number(form.price_night),
+              }).then(() => {
+                setForm({ number: '', type: 'Deluxe', price_night: '72000', photo: '', video: '' });
+                return load();
+              })
+            }
+          />
+        </View>
+      ) : null}
       <View style={styles.grid}>
         {visible.map((room) => (
-          <Pressable
-            key={room.id}
-            onPress={() => router.push(`/rooms/${room.id}` as Href)}
-            style={[styles.card, { width: cardWidth }]}>
+          <Pressable key={room.id} onPress={() => router.push(`/rooms/${room.id}` as Href)} style={[styles.card, { width: cardWidth }]}>
             <Image source={{ uri: room.photo }} style={styles.photo} contentFit="cover" />
+            {room.video ? (
+              <View style={styles.play}>
+                <Text style={styles.playText}>Vidéo</Text>
+              </View>
+            ) : null}
             <View style={styles.body}>
               <View style={styles.row}>
-                <Text style={styles.number}>Chambre {room.number}</Text>
+                <Text style={styles.number}>{room.number}</Text>
                 <StatusBadge label={roomStatusLabel[room.status] ?? room.status} tone={statusTone(room.status)} />
               </View>
+              <Text style={styles.type}>{room.type}</Text>
               <Text style={styles.meta}>
-                {room.type} · Étage {room.floor} · {room.capacity} pers.
+                Étage {room.floor} · {room.capacity} pers.
               </Text>
               <Text style={styles.price}>{money(room.price_night)} / nuit</Text>
-              <View style={styles.equipRow}>
-                {room.equipment.slice(0, 5).map((item) => (
-                  <View key={item.id} style={styles.equipChip}>
-                    <AppIcon name={item.icon as BoxIconName} size={14} color={Palette.ink} />
-                    <Text style={styles.equipLabel}>{item.name}</Text>
-                  </View>
-                ))}
-              </View>
-              {token && canFront ? (
-                <View style={styles.actions}>
-                  {canManage ? (
-                    <GoldBtn
-                      label="Indisponible"
-                      onPress={() => void pmsPost(token, 'rooms/block', { room_number: room.number }).then(load)}
-                    />
-                  ) : null}
-                  <GoldBtn
-                    label="Urgence nettoyage"
-                    onPress={() =>
-                      void pmsPost(token, 'housekeeping/urgent', {
-                        room_number: room.number,
-                        attendant: user?.full_name,
-                      }).then(load)
-                    }
-                  />
-                </View>
-              ) : null}
             </View>
           </Pressable>
         ))}
@@ -119,71 +104,46 @@ export default function RoomsScreen() {
 }
 
 const styles = StyleSheet.create({
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 16,
-  },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
   card: {
     backgroundColor: Palette.white,
     borderRadius: Radius.card,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: Palette.gold,
+    borderColor: 'rgba(20,22,34,0.06)',
   },
-  photo: {
-    width: '100%',
-    height: 168,
-    backgroundColor: Palette.ink,
-  },
-  body: {
-    padding: 14,
-    gap: 8,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  number: {
-    color: Palette.ink,
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  meta: {
-    color: Palette.ink,
-    opacity: 0.7,
-    fontSize: 13,
-  },
-  price: {
-    color: Palette.gold,
-    fontWeight: '800',
-    fontSize: 15,
-  },
-  equipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  equipChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(20,22,34,0.06)',
+  photo: { width: '100%', height: 190, backgroundColor: Palette.ink },
+  play: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    backgroundColor: Palette.gold,
     borderRadius: 999,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingVertical: 4,
   },
-  equipLabel: {
-    color: Palette.ink,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  actions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  playText: { color: Palette.ink, fontWeight: '800', fontSize: 11 },
+  body: { padding: 16, gap: 4 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  number: { color: Palette.ink, fontSize: 22, fontWeight: '800' },
+  type: { color: Palette.ink, fontWeight: '700' },
+  meta: { color: Palette.ink, opacity: 0.55, fontSize: 13 },
+  price: { color: Palette.gold, fontWeight: '800', marginTop: 6, fontSize: 16 },
+  form: {
+    backgroundColor: Palette.white,
+    borderRadius: Radius.card,
+    padding: 16,
     gap: 8,
-    marginTop: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(20,22,34,0.06)',
+  },
+  formTitle: { color: Palette.ink, fontWeight: '800' },
+  input: {
+    borderWidth: 1,
+    borderColor: 'rgba(20,22,34,0.12)',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: Palette.ink,
   },
 });

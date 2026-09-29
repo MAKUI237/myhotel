@@ -100,16 +100,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(payload.user);
       },
       async logout() {
-        if (token) {
-          try {
-            await logoutRequest(token);
-          } catch {
-            /* still clear locally */
-          }
-        }
+        const current = token;
         await clearSession();
         setToken(null);
         setUser(null);
+        if (current) {
+          void logoutRequest(current).catch(() => undefined);
+        }
       },
       async updateProfile(payload) {
         if (!token) throw new Error('Session expirée.');

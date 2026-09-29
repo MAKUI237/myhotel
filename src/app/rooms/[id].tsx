@@ -1,10 +1,10 @@
-import { Redirect, useLocalSearchParams } from 'expo-router';
-import { Image } from 'expo-image';
+import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppIcon, type BoxIconName } from '@/components/box-icon';
 import { HotelShell, StatusBadge } from '@/components/hotel/hotel-shell';
+import { RoomMedia } from '@/components/hotel/room-media';
 import { GoldBtn } from '@/components/hotel/kit';
 import { Palette, Radius } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -20,6 +20,7 @@ function statusTone(status: string): 'gold' | 'ink' | 'muted' {
 export default function RoomDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user, ready, token } = useAuth();
+  const router = useRouter();
   const [room, setRoom] = useState<Room | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +60,7 @@ export default function RoomDetailScreen() {
       {room ? (
         <View style={styles.wrap}>
           <View style={styles.carousel}>
-            {current ? <Image source={{ uri: current }} style={styles.photo} contentFit="cover" /> : null}
+            <RoomMedia photo={current ?? room.photo} video={photoIndex === 0 ? room.video : undefined} height={300} />
             {photos.length > 1 ? (
               <>
                 <Pressable
@@ -109,6 +110,16 @@ export default function RoomDetailScreen() {
                     }).then(load)
                   }
                 />
+                {canManage ? (
+                  <GoldBtn
+                    label="Supprimer"
+                    onPress={() =>
+                      void pmsPost(token, 'rooms/delete', { id: room.id }).then(() => {
+                        router.back();
+                      })
+                    }
+                  />
+                ) : null}
               </View>
             ) : null}
             <Text style={styles.section}>Mobilier & équipements</Text>

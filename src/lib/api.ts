@@ -35,6 +35,7 @@ export type Room = {
   capacity: number;
   photo: string;
   photos?: string[];
+  video?: string | null;
   description: string;
   equipment: EquipmentItem[];
 };

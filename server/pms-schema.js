@@ -16,6 +16,7 @@ function ensurePmsSchema(db) {
   addColumn(db, 'guests', 'document_id', 'TEXT');
   addColumn(db, 'guests', 'loyalty_nights', 'INTEGER NOT NULL DEFAULT 0');
 
+  addColumn(db, 'rooms', 'video', 'TEXT');
   addColumn(db, 'reservations', 'source', "TEXT NOT NULL DEFAULT 'reservation'");
   addColumn(db, 'reservations', 'confirmed', 'INTEGER NOT NULL DEFAULT 1');
   addColumn(db, 'reservations', 'notes', 'TEXT');
@@ -509,6 +510,9 @@ function seedWorkspace(db) {
        VALUES ('Claire Dubois', '102', date('now'), date('now','+3 day'), 'MH-102-CL', 'Amina Koffi')`,
     );
   }
+  const video =
+    'https://videos.pexels.com/video-files/3770033/3770033-hd_1920_1080_25fps.mp4';
+  db.run('UPDATE rooms SET video = ? WHERE video IS NULL OR video = \'\'', [video]);
   for (const row of db.all('SELECT id FROM staff WHERE id_number IS NULL OR id_number = \'\'')) {
     db.run('UPDATE staff SET id_number = ? WHERE id = ?', [`CNI-00${1000 + row.id}`, row.id]);
   }

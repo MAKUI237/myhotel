@@ -1,20 +1,14 @@
 import { type ReactNode, useState } from 'react';
 import { Redirect, usePathname, useRouter, type Href } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppIcon } from '@/components/box-icon';
 import { BrandMark } from '@/components/brand/brand-mark';
 import { AppBar } from '@/components/nav/app-bar';
 import { RightDrawer } from '@/components/nav/right-drawer';
+import { SideDrawer } from '@/components/nav/side-drawer';
 import { NotificationsPanel } from '@/components/profile/notifications-panel';
 import { ProfilePanel } from '@/components/profile/profile-panel';
 import { Brand } from '@/constants/config';
@@ -23,16 +17,17 @@ import { Breakpoints, Palette } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useNotifications } from '@/hooks/use-notifications';
 
-type Drawer = 'profile' | 'notifications' | null;
+type Panel = 'profile' | 'notifications';
 
 export function WorkspaceShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, ready } = useAuth();
+  const { user, ready, logout } = useAuth();
   const { width } = useWindowDimensions();
   const isDesktop = width >= Breakpoints.desktop;
-  const [drawer, setDrawer] = useState<Drawer>(null);
-  const [panel, setPanel] = useState<Exclude<Drawer, null>>('profile');
+  const [right, setRight] = useState<Panel | null>(null);
+  const [panel, setPanel] = useState<Panel>('profile');
+  const [menuOpen, setMenuOpen] = useState(false);
   const { items, unread, reload, mark, markAll } = useNotifications();
   const links = linksFor(user?.role);
 
@@ -42,104 +37,105 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   }
 
   function go(href: string) {
+    setMenuOpen(false);
     router.push(href as Href);
   }
 
-  const nav = links.map((item) => {
+  async function signOut() {
+    setMenuOpen(false);
+    setRight(null);
+    await logout();
+    router.replace('/welcome');
+  }
+
+  const navItems = links.map((item) => {
     const active = pathname === item.href || (item.href !== '/home' && pathname.startsWith(item.href));
     return (
-      <Pressable
-        key={item.href}
-        onPress={() => go(item.href)}
-        style={[
-          isDesktop ? styles.navItem : styles.dockItem,
-          active && (isDesktop ? styles.navItemOn : styles.dockOn),
-        ]}>
-        <AppIcon name={item.icon} size={isDesktop ? 20 : 22} color={active ? Palette.gold : isDesktop ? Palette.white : Palette.ink} />
-        <Text
-          numberOfLines={1}
-          style={[
-            isDesktop ? styles.navLabel : styles.dockLabel,
-            active && (isDesktop ? styles.navLabelOn : styles.dockLabelOn),
-          ]}>
+      <Pressable key={item.href} onPress={() => go(item.href)} style={[styles.navItem, active && styles.navItemOn]}>
+        <AppIcon name={item.icon} size={20} color={active ? Palette.gold : Palette.white} />
+        <Text numberOfLines={1} style={[styles.navLabel, active && styles.navLabelOn]}>
           {item.label}
         </Text>
       </Pressable>
     );
   });
 
+  const sidebar = (
+    <View style={styles.sidebarInner}>
+      <View style={styles.brandBlock}>
+        <BrandMark size={40} />
+        <View>
+          <Text style={styles.brand}>{Brand.name}</Text>
+          <Text style={styles.role}>{ROLE_LABEL[(user?.role as keyof typeof ROLE_LABEL) ?? 'client']}</Text>
+        </View>
+      </View>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.navList}>
+        {navItems}
+      </ScrollView>
+      <Pressable onPress={() => void signOut()} style={styles.logout}>
+        <AppIcon name="log-out" size={18} color={Palette.ink} />
+        <Text style={styles.logoutText}>Déconnexion</Text>
+      </Pressable>
+    </View>
+  );
+
+  const bar = (
+    <AppBar
+      showBrand={!isDesktop}
+      onMenu={isDesktop ? undefined : () => setMenuOpen((v) => !v)}
+      menuOpen={menuOpen}
+      unread={unread}
+      onNotifications={() => {
+        void reload();
+        setPanel('notifications');
+        setRight((c) => (c === 'notifications' ? null : 'notifications'));
+      }}
+      onProfile={() => {
+        setPanel('profile');
+        setRight((c) => (c === 'profile' ? null : 'profile'));
+      }}
+      notificationsOpen={right === 'notifications'}
+      profileOpen={right === 'profile'}
+    />
+  );
+
   return (
     <View style={styles.screen}>
       <StatusBar style={isDesktop ? 'light' : 'dark'} />
       {isDesktop ? (
         <View style={styles.desktop}>
-          <View style={styles.sidebar}>
-            <View style={styles.brandBlock}>
-              <BrandMark size={42} />
-              <View>
-                <Text style={styles.brand}>{Brand.name}</Text>
-                <Text style={styles.role}>{ROLE_LABEL[user?.role as keyof typeof ROLE_LABEL] ?? ''}</Text>
-              </View>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.navList}>
-              {nav}
-            </ScrollView>
-          </View>
+          <View style={styles.sidebar}>{sidebar}</View>
           <View style={styles.main}>
-            <AppBar
-              unread={unread}
-              onNotifications={() => {
-                void reload();
-                setPanel('notifications');
-                setDrawer((c) => (c === 'notifications' ? null : 'notifications'));
-              }}
-              onProfile={() => {
-                setPanel('profile');
-                setDrawer((c) => (c === 'profile' ? null : 'profile'));
-              }}
-              notificationsOpen={drawer === 'notifications'}
-              profileOpen={drawer === 'profile'}
-            />
+            {bar}
             <View style={styles.body}>{children}</View>
           </View>
         </View>
       ) : (
         <View style={styles.mobile}>
           <SafeAreaView edges={['top']} style={styles.mobileTop}>
-            <AppBar
-              unread={unread}
-              onNotifications={() => {
-                void reload();
-                setPanel('notifications');
-                setDrawer((c) => (c === 'notifications' ? null : 'notifications'));
-              }}
-              onProfile={() => {
-                setPanel('profile');
-                setDrawer((c) => (c === 'profile' ? null : 'profile'));
-              }}
-              notificationsOpen={drawer === 'notifications'}
-              profileOpen={drawer === 'profile'}
-            />
+            {bar}
           </SafeAreaView>
           <View style={styles.body}>{children}</View>
-          <SafeAreaView edges={['bottom']} style={styles.dockWrap}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dock}>
-              {nav}
-            </ScrollView>
-          </SafeAreaView>
         </View>
       )}
-      <RightDrawer open={drawer !== null} onClose={() => setDrawer(null)}>
+      {!isDesktop ? (
+        <SideDrawer open={menuOpen} onClose={() => setMenuOpen(false)} side="left">
+          <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1 }}>
+            {sidebar}
+          </SafeAreaView>
+        </SideDrawer>
+      ) : null}
+      <RightDrawer open={right !== null} onClose={() => setRight(null)}>
         {panel === 'notifications' ? (
           <NotificationsPanel
             items={items}
             unread={unread}
-            onClose={() => setDrawer(null)}
+            onClose={() => setRight(null)}
             onRead={(id) => void mark(id)}
             onReadAll={() => void markAll()}
           />
         ) : (
-          <ProfilePanel onClose={() => setDrawer(null)} />
+          <ProfilePanel onClose={() => setRight(null)} />
         )}
       </RightDrawer>
     </View>
@@ -147,20 +143,17 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: Palette.white,
-    overflow: 'hidden',
-  },
-  desktop: {
-    flex: 1,
-    flexDirection: 'row',
-  },
+  screen: { flex: 1, backgroundColor: Palette.white, overflow: 'hidden' },
+  desktop: { flex: 1, flexDirection: 'row' },
   sidebar: {
     width: 248,
     backgroundColor: Palette.ink,
-    paddingTop: 18,
+  },
+  sidebarInner: {
+    flex: 1,
+    paddingTop: 16,
     paddingHorizontal: 12,
+    paddingBottom: 16,
   },
   brandBlock: {
     flexDirection: 'row',
@@ -169,92 +162,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingBottom: 18,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(212,175,55,0.25)',
+    borderBottomColor: 'rgba(212,175,55,0.22)',
     marginBottom: 12,
   },
-  brand: {
-    color: Palette.gold,
-    fontWeight: '800',
-    fontSize: 16,
-    letterSpacing: 0.6,
-  },
-  role: {
-    color: Palette.white,
-    opacity: 0.7,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  navList: {
-    gap: 4,
-    paddingBottom: 24,
-  },
+  brand: { color: Palette.gold, fontWeight: '800', fontSize: 16, letterSpacing: 0.5 },
+  role: { color: Palette.white, opacity: 0.65, fontSize: 12, marginTop: 2 },
+  navList: { gap: 4, paddingBottom: 20 },
   navItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: 16,
   },
-  navItemOn: {
-    backgroundColor: 'rgba(212,175,55,0.16)',
-  },
-  navLabel: {
-    color: Palette.white,
-    fontSize: 13,
-    fontWeight: '600',
-    flex: 1,
-  },
-  navLabelOn: {
-    color: Palette.gold,
-    fontWeight: '800',
-  },
-  main: {
-    flex: 1,
-    backgroundColor: '#F4F5F8',
-  },
-  body: {
-    flex: 1,
-  },
-  mobile: {
-    flex: 1,
-    backgroundColor: '#F4F5F8',
-  },
-  mobileTop: {
-    backgroundColor: Palette.white,
-  },
-  dockWrap: {
-    backgroundColor: Palette.white,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(20,22,34,0.08)',
-  },
-  dock: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 4,
-    alignItems: 'center',
-  },
-  dockItem: {
-    width: 74,
+  navItemOn: { backgroundColor: 'rgba(212,175,55,0.16)' },
+  navLabel: { color: Palette.white, fontSize: 14, fontWeight: '600', flex: 1 },
+  navLabelOn: { color: Palette.gold, fontWeight: '800' },
+  logout: {
+    marginTop: 8,
+    backgroundColor: Palette.gold,
+    borderRadius: 16,
+    minHeight: 46,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 8,
-    borderRadius: 14,
+    gap: 8,
   },
-  dockOn: {
-    backgroundColor: 'rgba(212,175,55,0.18)',
-    borderRadius: 14,
-  },
-  dockLabel: {
-    color: Palette.ink,
-    fontSize: 10,
-    fontWeight: '600',
-    maxWidth: 72,
-    textAlign: 'center',
-  },
-  dockLabelOn: {
-    color: Palette.gold,
-    fontWeight: '800',
-  },
+  logoutText: { color: Palette.ink, fontWeight: '800' },
+  main: { flex: 1, backgroundColor: '#F6F7FA' },
+  body: { flex: 1 },
+  mobile: { flex: 1, backgroundColor: '#F6F7FA' },
+  mobileTop: { backgroundColor: Palette.white },
 });

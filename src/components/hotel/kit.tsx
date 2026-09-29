@@ -97,11 +97,11 @@ const styles = StyleSheet.create({
   },
   panel: {
     backgroundColor: Palette.white,
-    borderRadius: Radius.card,
+    borderRadius: 18,
     padding: 16,
     gap: 12,
     borderWidth: 1,
-    borderColor: Palette.gold,
+    borderColor: 'rgba(20,22,34,0.06)',
   },
   line: {
     flexDirection: 'row',
@@ -132,9 +132,9 @@ const styles = StyleSheet.create({
   },
   btn: {
     backgroundColor: Palette.gold,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   btnText: {
     color: Palette.ink,
