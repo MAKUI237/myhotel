@@ -11,18 +11,41 @@ function ensurePmsSchema(db) {
   addColumn(db, 'users', 'last_login', 'TEXT');
   addColumn(db, 'users', 'photo', 'TEXT');
   addColumn(db, 'users', 'role', "TEXT NOT NULL DEFAULT 'client'");
+  addColumn(db, 'users', 'status', "TEXT NOT NULL DEFAULT 'actif'");
 
   addColumn(db, 'guests', 'vip', 'INTEGER NOT NULL DEFAULT 0');
   addColumn(db, 'guests', 'document_id', 'TEXT');
   addColumn(db, 'guests', 'loyalty_nights', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'guests', 'first_name', 'TEXT');
+  addColumn(db, 'guests', 'last_name', 'TEXT');
 
   addColumn(db, 'rooms', 'video', 'TEXT');
+  addColumn(db, 'hk_tasks', 'lead_name', 'TEXT');
+  addColumn(db, 'hk_tasks', 'started_at', 'TEXT');
+  addColumn(db, 'hk_tasks', 'finished_at', 'TEXT');
+  addColumn(db, 'hk_tasks', 'notes', 'TEXT');
+  addColumn(db, 'hk_tasks', 'created_at', 'TEXT');
+  addColumn(db, 'hk_issues', 'resolved_at', 'TEXT');
+  addColumn(db, 'hk_issues', 'resolved_by', 'TEXT');
+  addColumn(db, 'chat_messages', 'attachment_url', 'TEXT');
+  addColumn(db, 'chat_messages', 'attachment_name', 'TEXT');
+  addColumn(db, 'chat_messages', 'attachment_mime', 'TEXT');
+  addColumn(db, 'chat_messages', 'attachment_size', 'INTEGER');
   addColumn(db, 'reservations', 'source', "TEXT NOT NULL DEFAULT 'reservation'");
   addColumn(db, 'reservations', 'confirmed', 'INTEGER NOT NULL DEFAULT 1');
   addColumn(db, 'reservations', 'notes', 'TEXT');
   addColumn(db, 'reservations', 'deposit_amount', 'REAL NOT NULL DEFAULT 0');
   addColumn(db, 'reservations', 'adults', 'INTEGER NOT NULL DEFAULT 1');
   addColumn(db, 'reservations', 'children', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'reservations', 'check_in_time', "TEXT NOT NULL DEFAULT '14:00'");
+  addColumn(db, 'reservations', 'check_out_time', "TEXT NOT NULL DEFAULT '12:00'");
+  addColumn(db, 'products', 'lot', 'TEXT');
+  addColumn(db, 'products', 'expires_at', 'TEXT');
+  addColumn(db, 'products', 'photo', 'TEXT');
+  addColumn(db, 'products', 'kind', "TEXT NOT NULL DEFAULT 'vente'");
+  addColumn(db, 'stock_moves', 'actor', 'TEXT');
+  addColumn(db, 'stock_moves', 'product_id', 'INTEGER');
+  addColumn(db, 'pos_sale_items', 'product_id', 'INTEGER');
 
   addColumn(db, 'staff', 'contract_type', "TEXT DEFAULT 'CDI'");
   addColumn(db, 'staff', 'salary_type', "TEXT DEFAULT 'Mensuel'");
@@ -112,6 +135,23 @@ function ensurePmsSchema(db) {
       eta_minutes INTEGER NOT NULL,
       due_at TEXT
     )`,
+    `CREATE TABLE IF NOT EXISTS hk_crew (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      agent_name TEXT NOT NULL,
+      user_id INTEGER,
+      is_lead INTEGER NOT NULL DEFAULT 0
+    )`,
+    `CREATE TABLE IF NOT EXISTS hk_issues (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_number TEXT NOT NULL,
+      task_id INTEGER,
+      reporter TEXT NOT NULL,
+      category TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ouverte',
+      at TEXT NOT NULL
+    )`,
     `CREATE TABLE IF NOT EXISTS equipment_moves (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       item TEXT NOT NULL,
@@ -158,7 +198,11 @@ function ensurePmsSchema(db) {
       min_stock REAL NOT NULL,
       cost REAL NOT NULL,
       price REAL NOT NULL,
-      warehouse_id INTEGER NOT NULL
+      warehouse_id INTEGER NOT NULL,
+      lot TEXT,
+      expires_at TEXT,
+      photo TEXT,
+      kind TEXT NOT NULL DEFAULT 'vente'
     )`,
     `CREATE TABLE IF NOT EXISTS suppliers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,7 +235,9 @@ function ensurePmsSchema(db) {
       qty REAL NOT NULL,
       at TEXT NOT NULL,
       note TEXT,
-      dest TEXT
+      dest TEXT,
+      actor TEXT,
+      product_id INTEGER
     )`,
     `CREATE TABLE IF NOT EXISTS inventories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,7 +273,8 @@ function ensurePmsSchema(db) {
       sale_id INTEGER NOT NULL,
       product_name TEXT NOT NULL,
       qty REAL NOT NULL,
-      price REAL NOT NULL
+      price REAL NOT NULL,
+      product_id INTEGER
     )`,
     `CREATE TABLE IF NOT EXISTS venues (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -369,6 +416,22 @@ function ensurePmsSchema(db) {
       url TEXT NOT NULL,
       sort INTEGER NOT NULL DEFAULT 0
     )`,
+    `CREATE TABLE IF NOT EXISTS room_videos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id INTEGER NOT NULL,
+      url TEXT NOT NULL,
+      sort INTEGER NOT NULL DEFAULT 0
+    )`,
+    `CREATE TABLE IF NOT EXISTS reservation_occupants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reservation_id INTEGER NOT NULL,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      phone TEXT,
+      document_id TEXT,
+      FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE
+    )`,
     `CREATE TABLE IF NOT EXISTS client_badges (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guest_name TEXT NOT NULL,
@@ -388,6 +451,31 @@ function ensurePmsSchema(db) {
       status TEXT NOT NULL DEFAULT 'ouverte',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    `CREATE TABLE IF NOT EXISTS staff_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sender_name TEXT NOT NULL,
+      sender_role TEXT,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0
+    )`,
+    `CREATE TABLE IF NOT EXISTS chat_threads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_a INTEGER NOT NULL,
+      user_b INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id INTEGER NOT NULL,
+      sender_id INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      attachment_url TEXT,
+      attachment_name TEXT,
+      attachment_mime TEXT,
+      attachment_size INTEGER
+    )`,
     `CREATE TABLE IF NOT EXISTS cash_moves (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       kind TEXT NOT NULL,
@@ -404,6 +492,15 @@ function ensurePmsSchema(db) {
       end_hour TEXT NOT NULL,
       task TEXT
     )`,
+    `CREATE TABLE IF NOT EXISTS work_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      assignee TEXT NOT NULL,
+      day TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'a_faire',
+      notes TEXT,
+      created_at TEXT
+    )`,
     `CREATE TABLE IF NOT EXISTS indemnity_lines (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       staff_id INTEGER NOT NULL,
@@ -412,9 +509,47 @@ function ensurePmsSchema(db) {
       at TEXT NOT NULL,
       note TEXT
     )`,
+    `CREATE TABLE IF NOT EXISTS company_profile (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      name TEXT NOT NULL,
+      legal_name TEXT,
+      address TEXT,
+      city TEXT,
+      country TEXT,
+      phone TEXT,
+      email TEXT,
+      website TEXT,
+      nif TEXT,
+      rccm TEXT,
+      slogan TEXT,
+      logo TEXT,
+      stamp TEXT
+    )`,
   ];
 
   for (const sql of tables) db.run(sql);
+  addColumn(db, 'client_badges', 'reservation_id', 'INTEGER');
+  addColumn(db, 'client_badges', 'status', "TEXT NOT NULL DEFAULT 'actif'");
+  addColumn(db, 'client_badges', 'revoked_at', 'TEXT');
+  if (!db.get('SELECT id FROM company_profile WHERE id = 1')) {
+    db.run(
+      `INSERT INTO company_profile (id, name, legal_name, address, city, country, phone, email, website, nif, rccm, slogan)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        'MyHotel',
+        'MyHotel SARL',
+        'Boulevard de la République',
+        'Douala',
+        'Cameroun',
+        '+237 6 00 00 00 00',
+        'contact@myhotel.cm',
+        'www.myhotel.cm',
+        'M123456789000P',
+        'RC/DLA/2024/B/1284',
+        'L’élégance de votre séjour',
+      ],
+    );
+  }
   seedNotifications(db);
   seedWorkspace(db);
 }
@@ -503,6 +638,14 @@ function seedWorkspace(db) {
       '16:00',
       'Étages 2 et 3',
     ]);
+    db.run(
+      "INSERT INTO work_tasks (title, assignee, day, status, notes, created_at) VALUES ('Contrôle linge étage 2', 'Koffi Mensah', ?, 'en_cours', 'Chariots et draps', datetime('now'))",
+      [today],
+    );
+    db.run(
+      "INSERT INTO work_tasks (title, assignee, day, status, notes, created_at) VALUES ('Clôture caisse accueil', 'Amina Koffi', ?, 'a_faire', 'Remise au gérant', datetime('now'))",
+      [today],
+    );
   }
   if (Number(db.get('SELECT COUNT(*) AS n FROM client_badges').n) === 0) {
     db.run(
@@ -544,6 +687,118 @@ function seedWorkspace(db) {
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES ('URGENCE', 'Nettoyage urgent', 'Chambre 303 indisponible — intervention immédiate.', '/housekeeping', 0, datetime('now', '-12 minutes'))`,
     );
+  }
+
+  try {
+    db.run(
+      `DELETE FROM hk_tasks WHERE status NOT IN ('pret','termine','controle')
+       AND id NOT IN (
+         SELECT id FROM (
+           SELECT MAX(id) AS id FROM hk_tasks WHERE status NOT IN ('pret','termine','controle') GROUP BY room_number
+         )
+       )`,
+    );
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    if (Number(db.get('SELECT COUNT(*) AS n FROM hk_crew').n) === 0) {
+      const open = db.get("SELECT id FROM hk_tasks WHERE room_number = '202' ORDER BY id DESC LIMIT 1");
+      if (open) {
+        db.run('INSERT INTO hk_crew (task_id, agent_name, is_lead) VALUES (?,?,1)', [open.id, 'Koffi Mensah']);
+        db.run('INSERT INTO hk_crew (task_id, agent_name, is_lead) VALUES (?,?,0)', [open.id, 'Fatou Diarra']);
+        db.run("UPDATE hk_tasks SET lead_name = 'Koffi Mensah', started_at = datetime('now','-40 minutes') WHERE id = ?", [
+          open.id,
+        ]);
+      }
+    }
+    if (Number(db.get('SELECT COUNT(*) AS n FROM hk_issues').n) === 0) {
+      db.run(
+        `INSERT INTO hk_issues (room_number, task_id, reporter, category, description, status, at)
+         VALUES ('202', (SELECT id FROM hk_tasks WHERE room_number = '202' ORDER BY id DESC LIMIT 1), 'Koffi Mensah', 'Consommables', 'Plus de savon ni de gel douche.', 'ouverte', datetime('now','-30 minutes'))`,
+      );
+      db.run(
+        `INSERT INTO hk_issues (room_number, task_id, reporter, category, description, status, at)
+         VALUES ('202', (SELECT id FROM hk_tasks WHERE room_number = '202' ORDER BY id DESC LIMIT 1), 'Koffi Mensah', 'Électricité', 'La lampe du salon ne s’allume plus.', 'ouverte', datetime('now','-25 minutes'))`,
+      );
+      db.run(
+        `INSERT INTO hk_issues (room_number, reporter, category, description, status, at)
+         VALUES ('303', 'Fatou Diarra', 'Électricité', 'Ampoule salle de bain HS.', 'ouverte', datetime('now','-12 minutes'))`,
+      );
+    }
+  } catch {
+    /* tables may not exist yet on first migrate */
+  }
+
+  try {
+    if (!db.get("SELECT value FROM app_meta WHERE key = 'demo_hk_checkouts'")) {
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      db.run(
+        `UPDATE reservations SET check_out = ?, check_out_time = '08:00'
+         WHERE status IN ('en_cours','confirmee')
+           AND room_id = (SELECT id FROM rooms WHERE number = '102' LIMIT 1)`,
+        [today],
+      );
+      db.run(
+        `UPDATE reservations SET check_out = ?, check_out_time = '09:30'
+         WHERE status IN ('en_cours','confirmee')
+           AND room_id = (SELECT id FROM rooms WHERE number = '201' LIMIT 1)`,
+        [today],
+      );
+      db.run("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('demo_hk_checkouts', '1')");
+    }
+  } catch {
+    /* ignore */
+  }
+
+  ensureHotelProducts(db);
+}
+
+function ensureHotelProducts(db) {
+  try {
+    db.run("DELETE FROM products WHERE name IN ('Riz parfumé 25kg','Huile 5L','Poulet entier','Filet de capitaine','Cocktail Coco','Pagne souvenir')");
+    const warehouse = db.get('SELECT id FROM warehouses ORDER BY id LIMIT 1');
+    const wid = warehouse ? warehouse.id : 1;
+    const catalog = [
+      ['Préservatifs', 'vente', 'boîte', 4, 10, 400, 1500, 'LOT-PRE'],
+      ['Eau minérale 50cl', 'vente', 'u', 48, 20, 200, 500, 'LOT-EAU'],
+      ['Eau minérale 1.5L', 'vente', 'u', 30, 12, 350, 800, 'LOT-E15'],
+      ['Coca-Cola 33cl', 'vente', 'u', 36, 12, 400, 1000, 'LOT-COC'],
+      ['Jus d’orange 33cl', 'vente', 'u', 20, 8, 450, 1200, 'LOT-JUS'],
+      ['Bière 33cl', 'vente', 'u', 24, 10, 500, 1500, 'LOT-BIE'],
+      ['Savon de toilette', 'vente', 'u', 18, 8, 300, 800, 'LOT-SAV'],
+      ['Brosse à dents', 'vente', 'u', 15, 6, 200, 700, 'LOT-BRO'],
+      ['Dentifrice', 'vente', 'u', 12, 5, 400, 1000, 'LOT-DEN'],
+      ['Rasoir jetable', 'vente', 'u', 16, 6, 150, 500, 'LOT-RAS'],
+      ['Peigne', 'vente', 'u', 10, 4, 200, 600, 'LOT-PEI'],
+      ['Chips', 'vente', 'u', 14, 6, 400, 1000, 'LOT-CHI'],
+      ['Carte postale', 'vente', 'u', 40, 10, 100, 500, 'LOT-CAR'],
+      ['Draps lit double', 'interne', 'u', 0, 6, 8000, 0, 'LOT-DRA'],
+      ['Draps lit simple', 'interne', 'u', 8, 4, 5500, 0, 'LOT-DRS'],
+      ['Taies d’oreiller', 'interne', 'u', 12, 8, 1500, 0, 'LOT-TAI'],
+      ['Serviettes de bain', 'interne', 'u', 2, 10, 2500, 0, 'LOT-SER'],
+      ['Gants de toilette', 'interne', 'u', 20, 8, 400, 0, 'LOT-GAN'],
+      ['Savon d’accueil', 'interne', 'u', 5, 15, 250, 0, 'LOT-ETA'],
+      ['Papier toilette', 'interne', 'rouleau', 30, 20, 200, 0, 'LOT-PAP'],
+      ['Javel 5L', 'interne', 'bidon', 4, 3, 1800, 0, 'LOT-JAV'],
+      ['Sacs poubelle', 'interne', 'paquet', 6, 4, 1200, 0, 'LOT-POU'],
+      ['Ampoules', 'interne', 'u', 0, 8, 600, 0, 'LOT-AMP'],
+    ];
+    catalog.forEach((row) => {
+      const existing = db.get('SELECT id FROM products WHERE name = ?', [row[0]]);
+      if (existing) {
+        db.run('UPDATE products SET kind=?, unit=? WHERE id=?', [row[1], row[2], existing.id]);
+        return;
+      }
+      db.run(
+        'INSERT INTO products (name, category, unit, stock, min_stock, cost, price, warehouse_id, lot, kind) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        [row[0], row[1] === 'vente' ? 'Accueil' : 'Magasin', row[2], row[3], row[4], row[5], row[6], wid, row[7], row[1]],
+      );
+    });
+  } catch {
+    /* products table may be missing on first migrate */
   }
 }
 

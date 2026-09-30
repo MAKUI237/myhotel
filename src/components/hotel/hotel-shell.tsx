@@ -1,39 +1,57 @@
 import { type ReactNode } from 'react';
 import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
+    ActivityIndicator,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    useWindowDimensions,
+    View,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import { AppIcon, type BoxIconName } from '@/components/box-icon';
+import { GoldBtn } from '@/components/hotel/kit';
 import { WorkspaceShell } from '@/components/workspace/workspace-shell';
-import { Palette, Radius } from '@/constants/theme';
+import { Breakpoints, Palette, Radius } from '@/constants/theme';
 
 type HotelShellProps = {
   title: string;
   subtitle?: string;
   children: ReactNode;
   back?: boolean;
+  onBack?: () => void;
   right?: ReactNode;
   loading?: boolean;
   error?: string | null;
+  fill?: boolean;
+  hideHeading?: boolean;
+  edgeToEdge?: boolean;
 };
 
-export function HotelShell({ title, subtitle, children, right, loading, error }: HotelShellProps) {
-  return (
-    <WorkspaceShell>
-      <ScrollView style={styles.flex} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+export function HotelShell({ title, subtitle, children, back, onBack, right, loading, error, fill, hideHeading, edgeToEdge }: HotelShellProps) {
+  const router = useRouter();
+  const { width } = useWindowDimensions();
+  const isDesktop = width >= Breakpoints.desktop;
+  const heading = hideHeading ? null : (
         <View style={styles.heading}>
+          {back ? (
+            <GoldBtn
+              icon="chevron-left"
+              label="Retour"
+              variant="ghost"
+              compact
+              onPress={() => (onBack ? onBack() : router.back())}
+            />
+          ) : null}
           <View style={styles.headingCopy}>
-            <Text style={styles.title}>{title}</Text>
+            <Text style={styles.title} numberOfLines={1}>{title}</Text>
             {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
           </View>
-          {right}
+          {right ? <View style={styles.headingRight}>{right}</View> : null}
         </View>
-        {loading ? (
+  );
+  const body = loading ? (
           <View style={styles.center}>
             <ActivityIndicator color={Palette.gold} size="large" />
           </View>
@@ -44,8 +62,24 @@ export function HotelShell({ title, subtitle, children, right, loading, error }:
           </View>
         ) : (
           children
-        )}
+        );
+
+  return (
+    <WorkspaceShell>
+      {fill ? (
+        <View style={[styles.flex, styles.fillPad, !isDesktop && styles.fillPadMobile, edgeToEdge && styles.fillBleed]}>
+          {heading}
+          <View style={styles.flex}>{body}</View>
+        </View>
+      ) : (
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={[styles.content, !isDesktop && styles.contentMobile]}
+        showsVerticalScrollIndicator={false}>
+        {heading}
+        {body}
       </ScrollView>
+      )}
     </WorkspaceShell>
   );
 }
@@ -106,6 +140,28 @@ export function ModuleCard({
 const styles = StyleSheet.create({
   flex: {
     flex: 1,
+    minHeight: 0,
+  },
+  fillPad: {
+    flex: 1,
+    minHeight: 0,
+    flexDirection: 'column',
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 12,
+    gap: 10,
+  },
+  fillPadMobile: {
+    paddingBottom: 4,
+    paddingHorizontal: 10,
+    minHeight: 0,
+  },
+  fillBleed: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    gap: 0,
+    minHeight: 0,
   },
   content: {
     paddingHorizontal: 18,
@@ -113,15 +169,29 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 14,
   },
+  contentMobile: {
+    paddingBottom: 28,
+  },
   heading: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 10,
     marginBottom: 4,
+    flexWrap: 'nowrap',
   },
   headingCopy: {
     flex: 1,
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  headingRight: {
+    marginLeft: 'auto',
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'nowrap',
+    gap: 8,
   },
   title: {
     color: Palette.ink,

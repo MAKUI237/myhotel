@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { AuthButton } from '@/components/auth/auth-button';
 import { AuthField } from '@/components/auth/auth-field';
 import { AuthShell } from '@/components/auth/auth-shell';
+import { AppIcon } from '@/components/box-icon';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 
@@ -68,8 +69,10 @@ export default function RegisterScreen() {
 
   return (
     <AuthShell>
+      <View style={styles.hero}>
+        <AppIcon name="user" size={34} color={Palette.ink} />
+      </View>
       <Text style={styles.title}>Inscription</Text>
-      <Text style={styles.subtitle}>Créez votre compte pour réserver et gérer vos séjours</Text>
 
       {error ? (
         <View style={styles.errorBox}>
@@ -141,16 +144,21 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
+  hero: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: Palette.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
   title: {
     color: Palette.ink,
     fontSize: 28,
     fontWeight: '800',
-  },
-  subtitle: {
-    color: Palette.ink,
-    opacity: 0.7,
-    fontSize: 15,
-    marginBottom: 6,
+    textAlign: 'center',
+    alignSelf: 'center',
   },
   errorBox: {
     borderWidth: 1,

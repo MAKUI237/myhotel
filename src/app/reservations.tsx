@@ -1,250 +1,1130 @@
-import { Redirect } from 'expo-router';
+import { Redirect, useRouter, type Href } from 'expo-router';
 import { Image } from 'expo-image';
-import { useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { createElement, useEffect, useMemo, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 
+import { AppIcon, type BoxIconName } from '@/components/box-icon';
+import { GuestBadgeCard, type GuestBadge } from '@/components/hotel/guest-badge-card';
+import { FilterBar } from '@/components/hotel/filter-bar';
 import { HotelShell, StatusBadge } from '@/components/hotel/hotel-shell';
-import { DateRangeCalendar, ymd } from '@/components/hotel/date-range-calendar';
-import { Chips, GoldBtn, Line, Panel } from '@/components/hotel/kit';
-import { Palette, Radius } from '@/constants/theme';
+import { ConfirmDialog, GoldBtn } from '@/components/hotel/kit';
+import { Breakpoints, Palette, Radius } from '@/constants/theme';
 import { usePms } from '@/hooks/use-pms';
-import { pmsPost } from '@/lib/api';
-import { money, reservationStatusLabel } from '@/lib/format';
+import { pmsGet, pmsPost, type CompanyProfile } from '@/lib/api';
+import { hkStatusLabel, money, prettyWhen, reservationStatusLabel, reservationTone } from '@/lib/format';
+import { downloadReservationReport, printGuestBadges, printReservationReport } from '@/lib/print';
 
-type FrontOffice = {
-  reservations: Array<{
-    id: number;
-    guest_name: string;
-    room_number: string;
-    room_type: string;
-    room_photo?: string;
-    check_in: string;
-    check_out: string;
-    status: string;
-    confirmed: number;
-    source: string;
-    total: number;
-    notes: string | null;
-  }>;
-  planning: {
-    days: string[];
-    rooms: Array<{
-      number: string;
-      type: string;
-      days: Array<{ date: string; busy: boolean; guest?: string; status?: string }>;
-    }>;
-  };
-  rooms: Array<{
-    id: number;
-    number: string;
-    type: string;
-    status: string;
-    price_night: number;
-    photo?: string;
-  }>;
-  transfers: Array<{ guest_name: string; from_room: string; to_room: string; reason: string; at: string }>;
+type Occupant = {
+  first_name: string;
+  last_name: string;
+  phone: string;
+  document_id: string;
 };
 
-function nightsBetween(a: string, b: string) {
-  return Math.max(1, Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000));
+type StayInfo = {
+  name: string;
+  phone?: string | null;
+  check_in: string;
+  check_out: string;
+  check_in_time?: string;
+  check_out_time?: string;
+};
+
+type RoomRow = {
+  id: number;
+  number: string;
+  type: string;
+  status: string;
+  price_night: number;
+  photo?: string;
+  video?: string | null;
+  capacity?: number;
+  floor?: number;
+  description?: string;
+  bucket?: 'disponible' | 'occupee' | 'entretien';
+  hk_status?: string | null;
+  hk_eta?: number;
+  hk_attendant?: string | null;
+  occupant?: StayInfo | null;
+  next_stay?: StayInfo | null;
+  next_free_date?: string;
+  next_free_time?: string;
+};
+
+type StayRow = {
+  id: number;
+  guest_name: string;
+  guest_phone?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  document_id?: string | null;
+  room_number: string;
+  room_type: string;
+  check_in: string;
+  check_out: string;
+  check_in_time?: string;
+  check_out_time?: string;
+  status: string;
+  total: number;
+  occupants?: Occupant[];
+};
+
+type FrontOffice = {
+  rooms: RoomRow[];
+  reservations: StayRow[];
+};
+
+function typeMeta(name: string, capacity: number): { icon: BoxIconName } {
+  const key = name.toLowerCase();
+  if (key.includes('deluxe')) return { icon: 'star' };
+  if (key.includes('président') || key.includes('president')) return { icon: 'credit-card' };
+  if (key.includes('suite')) return { icon: 'grid-alt' };
+  if (key.includes('famil') || capacity >= 4) return { icon: 'group' };
+  return { icon: 'bed' };
 }
 
+function TypeCard({
+  name,
+  icon,
+  free,
+  busy,
+  hk,
+  from,
+  width,
+  onPress,
+}: {
+  name: string;
+  icon: BoxIconName;
+  free: number;
+  busy: number;
+  hk: number;
+  from: number;
+  width: number;
+  onPress: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <Pressable
+      onPress={onPress}
+      onHoverIn={() => setHover(true)}
+      onHoverOut={() => setHover(false)}
+      style={({ pressed }) => [
+        styles.typeCard,
+        { width },
+        hover && !pressed && styles.typeCardHover,
+        pressed && styles.typeCardPress,
+      ]}>
+      <View style={styles.typeIcon}>
+        <AppIcon name={icon} size={16} color={Palette.ink} />
+      </View>
+      <Text style={styles.typeName} numberOfLines={1}>
+        {name}
+      </Text>
+      <Text style={styles.typeStats}>
+        {free} libres · {busy} occupées
+      </Text>
+      <Text style={styles.typeStats}>
+        {hk} entretien
+      </Text>
+      <Text style={styles.typePrice} numberOfLines={1}>
+        {new Intl.NumberFormat('fr-FR').format(from)} FCFA
+      </Text>
+    </Pressable>
+  );
+}
+
+function emptyPerson(): Occupant {
+  return { first_name: '', last_name: '', phone: '', document_id: '' };
+}
+
+function ymd(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function addDays(value: string, days: number) {
+  const date = new Date(`${value}T12:00:00`);
+  date.setDate(date.getDate() + days);
+  return ymd(date);
+}
+
+function stamp(date: string, time: string) {
+  return `${date} ${time.slice(0, 5)}`;
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  type = 'text',
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: 'text' | 'tel' | 'date' | 'time';
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      {Platform.OS === 'web' && (type === 'date' || type === 'time')
+        ? createElement('input', {
+            type,
+            value,
+            onChange: (event: { target: { value: string } }) => onChange(event.target.value),
+            style: webInput,
+          })
+        : (
+            <TextInput
+              value={value}
+              onChangeText={onChange}
+              placeholder={type === 'date' ? 'AAAA-MM-JJ' : type === 'time' ? 'HH:MM' : label}
+              keyboardType={type === 'tel' ? 'phone-pad' : 'default'}
+              style={styles.input}
+            />
+          )}
+    </View>
+  );
+}
+
+const webInput = {
+  border: '1px solid rgba(20,22,34,0.14)',
+  borderRadius: 16,
+  padding: '12px 14px',
+  color: Palette.ink,
+  fontSize: 15,
+  outline: 'none',
+  width: '100%',
+  boxSizing: 'border-box',
+  background: Palette.white,
+} as const;
+
 export default function ReservationsScreen() {
+  const router = useRouter();
+  const { width } = useWindowDimensions();
   const { data, error, loading, reload, token, user, ready } = usePms<FrontOffice>('front-office');
-  const [tab, setTab] = useState('reserver');
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const [checkIn, setCheckIn] = useState(ymd(new Date()));
-  const [checkOut, setCheckOut] = useState(ymd(tomorrow));
-  const [guest, setGuest] = useState('');
-  const [room, setRoom] = useState('');
-  const [toRoom, setToRoom] = useState('');
-  const [resId, setResId] = useState('');
+  const [view, setView] = useState('chambres');
+  const [type, setType] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [roomQuery, setRoomQuery] = useState('');
+  const [query, setQuery] = useState('');
+  const [stayStatus, setStayStatus] = useState('all');
+  const [stayType, setStayType] = useState('all');
+  const [booking, setBooking] = useState<RoomRow | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [savedId, setSavedId] = useState<number | null>(null);
+  const [step, setStep] = useState<'form' | 'badges'>('form');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [guest, setGuest] = useState<Occupant>(emptyPerson);
+  const [companions, setCompanions] = useState<Occupant[]>([]);
+  const [checkIn, setCheckIn] = useState(ymd());
+  const [checkOut, setCheckOut] = useState(addDays(ymd(), 1));
+  const [checkInTime, setCheckInTime] = useState('14:00');
+  const [checkOutTime, setCheckOutTime] = useState('12:00');
+  const [badges, setBadges] = useState<GuestBadge[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [badgeBusy, setBadgeBusy] = useState<number | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [pendingCancel, setPendingCancel] = useState<StayRow | null>(null);
+  const [pendingBadge, setPendingBadge] = useState<StayRow | null>(null);
+  const [previewBadges, setPreviewBadges] = useState<GuestBadge[]>([]);
+  const [company, setCompany] = useState<CompanyProfile | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    void pmsGet<CompanyProfile>(token, 'company').then(setCompany).catch(() => undefined);
+  }, [token]);
+
+  const rooms = data?.rooms ?? [];
+  const stays = data?.reservations ?? [];
+  const types = useMemo(() => {
+    const map = new Map<string, RoomRow[]>();
+    rooms.forEach((room) => {
+      const list = map.get(room.type) ?? [];
+      list.push(room);
+      map.set(room.type, list);
+    });
+    return Array.from(map.entries()).map(([name, list]) => ({
+      name,
+      rooms: list,
+      photo: list.find((r) => r.photo)?.photo,
+      from: Math.min(...list.map((r) => r.price_night)),
+      free: list.filter((r) => r.bucket === 'disponible').length,
+      busy: list.filter((r) => r.bucket === 'occupee').length,
+      hk: list.filter((r) => r.bucket === 'entretien').length,
+      capacity: Math.max(...list.map((r) => r.capacity ?? 1)),
+    }));
+  }, [rooms]);
 
   if (ready && !user) return <Redirect href="/welcome" />;
 
-  const selected = data?.rooms.find((r) => r.number === room);
-  const nights = nightsBetween(checkIn, checkOut);
-  const occupied = useMemo(() => {
-    const set = new Set<string>();
-    data?.reservations
-      .filter((r) => r.status !== 'annulee')
-      .forEach((r) => {
-        const start = new Date(r.check_in);
-        const end = new Date(r.check_out);
-        for (let d = new Date(start); d < end; d.setDate(d.getDate() + 1)) {
-          set.add(`${r.room_number}:${ymd(d)}`);
-        }
-      });
-    return set;
-  }, [data]);
+  const isDesktop = width >= Breakpoints.desktop;
+  const isMobile = width < Breakpoints.tablet;
+  const isGerant = user?.role === 'manager' || user?.role === 'owner';
+  const contentW = Math.max(320, (isDesktop ? width - 248 : width) - 40);
+  const tableWidth = isMobile ? contentW : Math.max(contentW, contentW < 1000 ? 1000 : contentW);
+  const typeCols = isDesktop ? 4 : width >= Breakpoints.tablet ? 3 : 2;
+  const typeAvailable = (isDesktop ? width - 248 : width) - 36;
+  const typeCardWidth = Math.min(200, Math.max(148, Math.floor((typeAvailable - (typeCols - 1) * 12) / typeCols)));
+  const roomCols = isDesktop ? 3 : width >= Breakpoints.tablet ? 2 : 1;
+  const roomCardWidth = Math.max(160, Math.floor((typeAvailable - (roomCols - 1) * 16) / roomCols));
 
-  const available = (data?.rooms ?? []).filter((r) => {
-    if (r.status === 'maintenance') return false;
-    for (let d = new Date(checkIn); d < new Date(checkOut); d.setDate(d.getDate() + 1)) {
-      if (occupied.has(`${r.number}:${ymd(d)}`)) return false;
-    }
+  const ofType = rooms.filter((room) => room.type === type);
+  const filtered = ofType
+    .filter((room) => {
+      const hay = `${room.number} ${room.type} ${room.occupant?.name ?? ''}`.toLowerCase();
+      if (roomQuery.trim() && !hay.includes(roomQuery.trim().toLowerCase())) return false;
+      if (statusFilter === 'all') return true;
+      if (statusFilter === 'disponible') return room.bucket === 'disponible';
+      if (statusFilter === 'occupee') return room.bucket === 'occupee';
+      if (statusFilter === 'entretien') return room.bucket === 'entretien';
+      if (statusFilter === 'maintenance') return room.status === 'maintenance' || room.hk_status === 'maintenance';
+      return true;
+    })
+    .sort((a, b) => {
+      const rank = (row: RoomRow) => (row.bucket === 'disponible' ? 0 : row.bucket === 'entretien' ? 1 : 2);
+      return rank(a) - rank(b) || a.number.localeCompare(b.number, 'fr');
+    });
+  const stayTypes = Array.from(new Set(stays.map((row) => row.room_type))).filter(Boolean);
+  const visibleStays = stays.filter((row) => {
+    const hay = `${row.guest_name} ${row.room_number} ${row.guest_phone ?? ''} ${row.document_id ?? ''}`.toLowerCase();
+    if (query.trim() && !hay.includes(query.trim().toLowerCase())) return false;
+    if (stayStatus !== 'all' && row.status !== stayStatus) return false;
+    if (stayType !== 'all' && row.room_type !== stayType) return false;
     return true;
   });
+  const capacity = Math.max(1, booking?.capacity ?? 1);
 
-  async function book() {
-    if (!token) return;
-    if (!guest.trim() || !room) {
-      const message = 'Indiquez le client et choisissez une chambre.';
-      if (Platform.OS === 'web') globalThis.alert(message);
-      else Alert.alert(message);
+  function openBook(room: RoomRow) {
+    const freeDate = room.next_free_date || ymd();
+    const freeTime = room.next_free_time || '14:00';
+    const arrivalTime = freeTime > '14:00' ? freeTime : '14:00';
+    setEditingId(null);
+    setSavedId(null);
+    setStep('form');
+    setFormError(null);
+    setBooking(room);
+    setGuest(emptyPerson());
+    setCompanions([]);
+    setCheckIn(freeDate);
+    setCheckInTime(arrivalTime);
+    setCheckOut(addDays(freeDate, 1));
+    setCheckOutTime('12:00');
+    setBadges([]);
+  }
+
+  function openEdit(row: StayRow) {
+    const room = rooms.find((item) => item.number === row.room_number) ?? null;
+    const names = String(row.guest_name || '').trim().split(/\s+/);
+    setEditingId(row.id);
+    setSavedId(row.id);
+    setStep('form');
+    setFormError(null);
+    setBooking(room);
+    setGuest({
+      first_name: row.first_name || names.slice(1).join(' ') || names[0] || '',
+      last_name: row.last_name || names[0] || '',
+      phone: row.guest_phone || '',
+      document_id: row.document_id || '',
+    });
+    const extra = (row.occupants ?? []).filter((person) => !('is_primary' in person) || Number((person as Occupant & { is_primary?: number }).is_primary) !== 1);
+    setCompanions(
+      extra.length
+        ? extra.map((person) => ({
+            first_name: person.first_name,
+            last_name: person.last_name,
+            phone: person.phone,
+            document_id: person.document_id,
+          }))
+        : [],
+    );
+    setCheckIn(row.check_in.slice(0, 10));
+    setCheckOut(row.check_out.slice(0, 10));
+    setCheckInTime((row.check_in_time || '14:00').slice(0, 5));
+    setCheckOutTime((row.check_out_time || '12:00').slice(0, 5));
+    setBadges([]);
+    if (!room) setFormError('Chambre introuvable pour cette réservation.');
+  }
+
+  function closeModal() {
+    setBooking(null);
+    setEditingId(null);
+    setSavedId(null);
+    setStep('form');
+    setFormError(null);
+    setBadges([]);
+    setSaving(false);
+  }
+
+  async function confirm() {
+    if (!booking || saving) return;
+    if (!token) {
+      setFormError('Session expirée. Reconnectez-vous.');
       return;
     }
+    setFormError(null);
+    if (!guest.last_name.trim() || !guest.first_name.trim() || !guest.phone.trim() || !guest.document_id.trim()) {
+      setFormError('Renseignez nom, prénom, téléphone et numéro de CNI.');
+      return;
+    }
+    if (!checkIn || !checkOut || !checkInTime || !checkOutTime) {
+      setFormError('Indiquez la date et l’heure d’arrivée et de départ.');
+      return;
+    }
+    if (stamp(checkOut, checkOutTime) <= stamp(checkIn, checkInTime)) {
+      setFormError('La date et l’heure de départ doivent être après l’arrivée.');
+      return;
+    }
+    if (!editingId) {
+      const free = stamp(booking.next_free_date || ymd(), booking.next_free_time || '14:00');
+      if (stamp(checkIn, checkInTime) < free) {
+        setFormError(`Cette chambre n’est libre qu’à partir du ${prettyWhen(booking.next_free_date || ymd(), booking.next_free_time)}.`);
+        return;
+      }
+    }
+    const extra = companions.filter((row) => row.first_name.trim() && row.last_name.trim());
+    for (const row of extra) {
+      if (!row.phone.trim() || !row.document_id.trim()) {
+        setFormError('Chaque occupant doit avoir un téléphone et une CNI.');
+        return;
+      }
+    }
+    setSaving(true);
     try {
-      await pmsPost(token, 'reservations', {
-        guest_name: guest.trim(),
-        room_number: room,
+      const payload = {
+        first_name: guest.first_name.trim(),
+        last_name: guest.last_name.trim(),
+        guest_name: `${guest.first_name.trim()} ${guest.last_name.trim()}`,
+        phone: guest.phone.trim(),
+        document_id: guest.document_id.trim(),
+        room_number: booking.number,
         check_in: checkIn,
         check_out: checkOut,
+        check_in_time: checkInTime,
+        check_out_time: checkOutTime,
+        companions: extra,
         source: 'reservation',
-      });
-      setGuest('');
+      };
+      const res = editingId
+        ? await pmsPost<{ id: number }>(token, `reservations/${editingId}/update`, payload)
+        : await pmsPost<{ id: number }>(token, 'reservations', payload);
+      setSavedId(res.id ?? editingId);
+      setView('sejours');
       await reload();
-      if (Platform.OS === 'web') globalThis.alert('Réservation enregistrée.');
-      else Alert.alert('Réservation enregistrée');
-      setTab('sejours');
+      if (isGerant) {
+        setStep('badges');
+      } else {
+        closeModal();
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Impossible.';
-      if (Platform.OS === 'web') globalThis.alert(message);
-      else Alert.alert(message);
+      setFormError(err instanceof Error ? err.message : 'Impossible d’enregistrer.');
+    } finally {
+      setSaving(false);
     }
   }
 
-  return (
-    <HotelShell title="Réservations" subtitle="Calendrier, chambres disponibles et séjour client" loading={loading} error={error}>
-      <Chips
-        value={tab}
-        onChange={setTab}
-        options={[
-          { id: 'reserver', label: 'Réserver' },
-          { id: 'planning', label: 'Occupation' },
-          { id: 'sejours', label: 'Séjours' },
-          { id: 'transferts', label: 'Transfert' },
-        ]}
-      />
+  async function generateBadges() {
+    if (!token || !savedId || saving) return;
+    setSaving(true);
+    setFormError(null);
+    try {
+      const res = await pmsPost<{ badges: GuestBadge[] }>(token, `reservations/${savedId}/badges`);
+      setBadges(res.badges ?? []);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Impossible de générer les badges.');
+    } finally {
+      setSaving(false);
+    }
+  }
 
-      {tab === 'reserver' ? (
-        <>
-          <Panel>
-            <Text style={styles.kicker}>Dates du séjour</Text>
-            <DateRangeCalendar
-              checkIn={checkIn}
-              checkOut={checkOut}
-              onChange={({ checkIn: a, checkOut: b }) => {
-                setCheckIn(a);
-                setCheckOut(b);
-                setRoom('');
+  async function issueStayBadges(id: number) {
+    if (!token || badgeBusy) return;
+    setBadgeBusy(id);
+    setListError(null);
+    try {
+      const res = await pmsPost<{ badges: GuestBadge[] }>(token, `reservations/${id}/badges`);
+      setPreviewBadges(res.badges ?? []);
+      setPendingBadge(null);
+      await reload();
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : 'Impossible de générer les badges.');
+    } finally {
+      setBadgeBusy(null);
+    }
+  }
+
+  function StayActions({ row }: { row: StayRow }) {
+    return (
+      <View style={styles.actionBtns}>
+        <Pressable
+          style={styles.iconBtn}
+          accessibilityLabel="Imprimer le reçu"
+          onPress={() => printReservationReport(row, company ?? {}, reservationStatusLabel[row.status] ?? row.status)}>
+          <AppIcon name="printer" size={18} color={Palette.ink} />
+        </Pressable>
+        {isGerant ? (
+          <Pressable
+            style={styles.iconBtn}
+            accessibilityLabel="Télécharger le reçu PDF"
+            onPress={() => downloadReservationReport(row, company ?? {}, reservationStatusLabel[row.status] ?? row.status)}>
+            <AppIcon name="download" size={18} color={Palette.ink} />
+          </Pressable>
+        ) : null}
+        {isGerant && row.status !== 'annulee' ? (
+          <Pressable
+            style={styles.iconBtn}
+            accessibilityLabel="Générer le badge"
+            disabled={badgeBusy === row.id}
+            onPress={() => setPendingBadge(row)}>
+            <AppIcon name="id-card" size={18} color={Palette.ink} />
+          </Pressable>
+        ) : null}
+        {row.status !== 'annulee' ? (
+          <Pressable style={styles.iconBtn} accessibilityLabel="Modifier" onPress={() => openEdit(row)}>
+            <AppIcon name="edit" size={18} color={Palette.ink} />
+          </Pressable>
+        ) : null}
+        {row.status !== 'annulee' && token ? (
+          isGerant ? (
+            <Pressable
+              style={[styles.iconBtn, styles.iconDanger]}
+              accessibilityLabel="Annuler la réservation"
+              onPress={() => setPendingCancel(row)}>
+              <AppIcon name="x-circle" size={18} color={Palette.white} />
+            </Pressable>
+          ) : (
+            <GoldBtn tiny icon="x-circle" label="Annuler" variant="ghost" onPress={() => setPendingCancel(row)} />
+          )
+        ) : null}
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <HotelShell
+        title="Réservations"
+        loading={loading && !data}
+        error={error}
+        back={Boolean(type && view === 'chambres')}
+        onBack={() => setType(null)}
+        right={
+          <View style={styles.tabs}>
+            <GoldBtn
+              tiny
+              label="Chambres"
+              variant={view === 'chambres' ? 'gold' : 'ghost'}
+              onPress={() => {
+                setView('chambres');
+                setType(null);
               }}
             />
-            <Text style={styles.meta}>
-              {checkIn} → {checkOut} · {nights} nuit{nights > 1 ? 's' : ''}
-            </Text>
-            <TextInput placeholder="Nom du client" value={guest} onChangeText={setGuest} style={styles.input} />
-          </Panel>
-          {available.map((r) => (
-            <Pressable key={r.id} onPress={() => setRoom(r.number)} style={[styles.roomCard, room === r.number && styles.roomOn]}>
-              <Image source={{ uri: r.photo }} style={styles.thumb} contentFit="cover" />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.roomTitle}>
-                  Chambre {r.number} · {r.type}
-                </Text>
-                <Text style={styles.meta}>{money(r.price_night)} / nuit · {money(r.price_night * nights)} séjour</Text>
-              </View>
-              {room === r.number ? <StatusBadge label="Choisie" tone="gold" /> : null}
-            </Pressable>
-          ))}
-          {!available.length ? <Text style={styles.meta}>Aucune chambre libre sur ces dates.</Text> : null}
-          <GoldBtn label={selected ? `Confirmer ${selected.number}` : 'Choisir une chambre'} onPress={() => void book()} />
-        </>
-      ) : null}
-
-      {tab === 'planning' && data ? (
-        <Panel>
-          <Text style={styles.kicker}>Occupation des 10 prochains jours</Text>
-          <View style={styles.planHead}>
-            <Text style={[styles.planLabel, styles.planRoom]}>Ch.</Text>
-            {data.planning.days.map((d) => (
-              <Text key={d} style={styles.planDay}>
-                {d.slice(8)}
-              </Text>
-            ))}
+            <GoldBtn
+              tiny
+              label="Liste réservation"
+              variant={view === 'sejours' ? 'gold' : 'ghost'}
+              onPress={() => setView('sejours')}
+            />
           </View>
-          {data.planning.rooms.map((row) => (
-            <View key={row.number} style={styles.planHead}>
-              <Text style={[styles.planLabel, styles.planRoom]}>{row.number}</Text>
-              {row.days.map((cell) => (
-                <View
-                  key={cell.date}
-                  style={[
-                    styles.planCell,
-                    { backgroundColor: cell.busy ? Palette.gold : 'rgba(20,22,34,0.06)' },
-                  ]}
+        }>
+        {view === 'sejours' ? (
+          <>
+            <FilterBar
+              query={query}
+              onQuery={setQuery}
+              queryPlaceholder="Rechercher client, chambre..."
+              category={stayType}
+              onCategory={setStayType}
+              categories={[{ id: 'all', label: 'Tous les types' }, ...stayTypes.map((id) => ({ id, label: id }))]}
+              status={stayStatus}
+              onStatus={setStayStatus}
+              statuses={[
+                { id: 'all', label: 'Tous' },
+                { id: 'confirmee', label: 'Confirmée' },
+                { id: 'en_cours', label: 'En cours' },
+                { id: 'terminee', label: 'Terminée' },
+                { id: 'annulee', label: 'Annulée' },
+              ]}
+            />
+            {listError ? <Text style={styles.formError}>{listError}</Text> : null}
+            {isMobile ? (
+              <View style={styles.stayList}>
+                {visibleStays.map((row) => (
+                  <View key={row.id} style={styles.stayCard}>
+                    <View style={styles.stayCardHead}>
+                      <View style={styles.flex}>
+                        <Text style={styles.clientName}>{row.guest_name}</Text>
+                        <Text style={styles.lot}>{row.guest_phone || row.document_id || '—'}</Text>
+                      </View>
+                      <StatusBadge
+                        label={reservationStatusLabel[row.status] ?? row.status}
+                        tone={reservationTone[row.status] ?? 'gold'}
+                      />
+                    </View>
+                    <Text style={styles.stayLine}>
+                      Ch. {row.room_number} · {row.room_type}
+                    </Text>
+                    <Text style={styles.stayLine}>
+                      {prettyWhen(row.check_in, row.check_in_time)} → {prettyWhen(row.check_out, row.check_out_time)}
+                    </Text>
+                    <Text style={styles.total}>{money(row.total)}</Text>
+                    <StayActions row={row} />
+                  </View>
+                ))}
+              </View>
+            ) : (
+            <ScrollView horizontal={contentW < 1000} showsHorizontalScrollIndicator={contentW < 1000}>
+              <View style={[styles.table, { width: tableWidth, minWidth: tableWidth }]}>
+                <View style={[styles.tr, styles.th]}>
+                  <Text style={[styles.td, styles.colClient, styles.thText]}>Client</Text>
+                  <Text style={[styles.td, styles.colRoom, styles.thText]}>Chambre</Text>
+                  <Text style={[styles.td, styles.colType, styles.thText]}>Type</Text>
+                  <Text style={[styles.td, styles.colDate, styles.thText]}>Arrivée</Text>
+                  <Text style={[styles.td, styles.colDate, styles.thText]}>Départ</Text>
+                  <Text style={[styles.td, styles.colStatus, styles.thText]}>Statut</Text>
+                  <Text style={[styles.td, styles.colTotal, styles.thText]}>Total</Text>
+                  <Text style={[styles.td, styles.colActions, styles.thText]}>Action</Text>
+                </View>
+                {visibleStays.map((row, index) => (
+                  <View key={row.id} style={[styles.tr, index % 2 ? styles.trAlt : null]}>
+                    <View style={[styles.td, styles.colClient]}>
+                      <Text style={styles.clientName} numberOfLines={1}>{row.guest_name}</Text>
+                      <Text style={styles.lot} numberOfLines={1}>{row.guest_phone || row.document_id || '—'}</Text>
+                    </View>
+                    <Text style={[styles.td, styles.colRoom]}>{row.room_number}</Text>
+                    <Text style={[styles.td, styles.colType]} numberOfLines={1}>{row.room_type}</Text>
+                    <Text style={[styles.td, styles.colDate]}>{prettyWhen(row.check_in, row.check_in_time)}</Text>
+                    <Text style={[styles.td, styles.colDate]}>{prettyWhen(row.check_out, row.check_out_time)}</Text>
+                    <View style={[styles.td, styles.colStatus]}>
+                      <StatusBadge
+                        label={reservationStatusLabel[row.status] ?? row.status}
+                        tone={reservationTone[row.status] ?? 'gold'}
+                      />
+                    </View>
+                    <Text style={[styles.td, styles.colTotal, styles.total]}>{money(row.total)}</Text>
+                    <View style={[styles.td, styles.colActions]}>
+                      <StayActions row={row} />
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+            )}
+            {!visibleStays.length ? <Text style={styles.empty}>Aucune réservation ne correspond.</Text> : null}
+          </>
+        ) : !type ? (
+          <View style={styles.typeList}>
+            {types.map((item) => {
+              const meta = typeMeta(item.name, item.capacity);
+              return (
+                <TypeCard
+                  key={item.name}
+                  name={item.name}
+                  icon={meta.icon}
+                  free={item.free}
+                  busy={item.busy}
+                  hk={item.hk}
+                  from={item.from}
+                  width={typeCardWidth}
+                  onPress={() => {
+                    setType(item.name);
+                    setStatusFilter('all');
+                    setRoomQuery('');
+                  }}
+                />
+              );
+            })}
+          </View>
+        ) : (
+          <>
+            <FilterBar
+              query={roomQuery}
+              onQuery={setRoomQuery}
+              queryPlaceholder="Rechercher une chambre..."
+              status={statusFilter}
+              onStatus={setStatusFilter}
+              statuses={[
+                { id: 'all', label: 'Tous' },
+                { id: 'disponible', label: 'Disponible' },
+                { id: 'occupee', label: 'Occupée' },
+                { id: 'entretien', label: 'Entretien' },
+                { id: 'maintenance', label: 'Maintenance' },
+              ]}
+            />
+            <View style={styles.roomGrid}>
+              {filtered.map((room) => (
+                <RoomCard
+                  key={room.id}
+                  room={room}
+                  width={roomCardWidth}
+                  onBook={() => openBook(room)}
+                  onDetails={() => router.push(`/rooms/${room.id}` as Href)}
                 />
               ))}
             </View>
-          ))}
-        </Panel>
-      ) : null}
+            {!filtered.length ? <Text style={styles.empty}>Aucune chambre dans ce filtre.</Text> : null}
+          </>
+        )}
+      </HotelShell>
 
-      {tab === 'sejours'
-        ? data?.reservations.map((row) => (
-            <Panel key={row.id}>
-              <Line
-                icon="calendar"
-                title={`${row.guest_name} · ch. ${row.room_number}`}
-                meta={`${row.check_in} → ${row.check_out} · ${money(row.total)}`}
-                right={<StatusBadge label={reservationStatusLabel[row.status] ?? row.status} tone={row.status === 'annulee' ? 'muted' : 'gold'} />}
-              />
-              {row.status !== 'annulee' && token ? (
-                <GoldBtn
-                  label="Annuler"
-                  onPress={() => void pmsPost(token, `reservations/${row.id}/cancel`).then(reload)}
-                />
+      <Modal visible={!!booking} animationType="fade" transparent onRequestClose={closeModal}>
+        <View style={styles.overlay}>
+          <Pressable style={styles.overlayFill} onPress={closeModal} />
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.sheetWrap} pointerEvents="box-none">
+          <View style={styles.sheet}>
+            <ScrollView contentContainerStyle={styles.sheetInner} showsVerticalScrollIndicator={false}>
+              <View style={styles.sheetHead}>
+                <View>
+                  <Text style={styles.sheetKicker}>Réservation</Text>
+                  <Text style={styles.sheetTitle}>
+                    {editingId ? 'Modifier' : 'Réservation'} · Chambre {booking?.number}
+                  </Text>
+                  <Text style={styles.meta}>
+                    {money(booking?.price_night ?? 0)} / nuit · {capacity} pers. max
+                  </Text>
+                </View>
+                <Pressable onPress={closeModal} hitSlop={12}>
+                  <AppIcon name="x-circle" size={24} color={Palette.ink} />
+                </Pressable>
+              </View>
+
+              {booking?.occupant ? (
+                <View style={styles.notice}>
+                  <Text style={styles.noticeTitle}>Occupée maintenant</Text>
+                  <Text style={styles.meta}>
+                    {booking.occupant.name} · libère le {prettyWhen(booking.occupant.check_out, booking.occupant.check_out_time)}
+                  </Text>
+                </View>
               ) : null}
-            </Panel>
-          ))
-        : null}
+              {booking?.hk_status && booking.hk_status !== 'pret' ? (
+                <View style={styles.notice}>
+                  <Text style={styles.noticeTitle}>Entretien · {hkStatusLabel[booking.hk_status] ?? booking.hk_status}</Text>
+                  <Text style={styles.meta}>
+                    {booking.hk_attendant ? `${booking.hk_attendant} · ` : ''}
+                    {booking.hk_eta ? `ETA ${booking.hk_eta} min` : 'En intervention'}
+                  </Text>
+                </View>
+              ) : null}
+              <Text style={styles.goldLine}>
+                Prochaine disponibilité : {prettyWhen(booking?.next_free_date || ymd(), booking?.next_free_time)}
+              </Text>
 
-      {tab === 'transferts' ? (
-        <>
-          <Panel>
-            <Text style={styles.kicker}>Changer de chambre</Text>
-            <TextInput placeholder="N° séjour" value={resId} onChangeText={setResId} keyboardType="numeric" style={styles.input} />
-            <TextInput placeholder="Nouvelle chambre" value={toRoom} onChangeText={setToRoom} style={styles.input} />
-            <Text style={styles.meta}>
-              {data?.reservations
-                .filter((r) => r.status !== 'annulee')
-                .map((r) => `#${r.id} ${r.guest_name} ch.${r.room_number}`)
-                .join(' · ')}
-            </Text>
-            <GoldBtn
-              label="Transférer"
-              onPress={() =>
-                token
-                  ? void pmsPost(token, `reservations/${Number(resId)}/transfer`, { to_room: toRoom, reason: 'Demande client' }).then(reload)
-                  : undefined
-              }
-            />
-          </Panel>
-          {data?.transfers.map((row) => (
-            <Panel key={row.at + row.to_room}>
-              <Line icon="door-open" title={`${row.guest_name} : ${row.from_room} → ${row.to_room}`} meta={row.at} />
-            </Panel>
-          ))}
-        </>
-      ) : null}
-    </HotelShell>
+              {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+
+              {step === 'badges' ? (
+                <View style={styles.badgeWrap}>
+                  <Text style={styles.sectionTitle}>Réservation enregistrée</Text>
+                  <Text style={styles.meta}>
+                    {guest.first_name} {guest.last_name} · ch. {booking?.number} · {prettyWhen(checkIn, checkInTime)} →{' '}
+                    {prettyWhen(checkOut, checkOutTime)}
+                  </Text>
+                  {!badges.length ? (
+                    <GoldBtn icon="id-card" label={saving ? 'Génération…' : 'Générer les badges'} onPress={() => void generateBadges()} />
+                  ) : (
+                    <>
+                      <Text style={styles.meta}>Cartes nominatives à imprimer pour chaque occupant.</Text>
+                      <View style={styles.badgeRow}>
+                        {badges.map((badge) => (
+                          <GuestBadgeCard key={badge.code} badge={badge} />
+                        ))}
+                      </View>
+                      <GoldBtn icon="receipt" label="Imprimer les badges" onPress={() => printGuestBadges(badges)} />
+                    </>
+                  )}
+                  <GoldBtn icon="x-circle" label="Fermer" variant="ghost" onPress={closeModal} />
+                </View>
+              ) : (
+                <>
+                  <Text style={styles.sectionTitle}>Client titulaire</Text>
+                  <View style={styles.formGrid}>
+                    <Field label="Nom" value={guest.last_name} onChange={(last_name) => setGuest({ ...guest, last_name })} />
+                    <Field label="Prénom" value={guest.first_name} onChange={(first_name) => setGuest({ ...guest, first_name })} />
+                    <Field label="Téléphone" type="tel" value={guest.phone} onChange={(phone) => setGuest({ ...guest, phone })} />
+                    <Field
+                      label="N° carte nationale d’identité"
+                      value={guest.document_id}
+                      onChange={(document_id) => setGuest({ ...guest, document_id })}
+                    />
+                  </View>
+
+                  <Text style={styles.sectionTitle}>Date et heure</Text>
+                  <View style={styles.formGrid}>
+                    <Field label="Arrivée — date" type="date" value={checkIn} onChange={setCheckIn} />
+                    <Field label="Arrivée — heure" type="time" value={checkInTime} onChange={setCheckInTime} />
+                    <Field label="Départ — date" type="date" value={checkOut} onChange={setCheckOut} />
+                    <Field label="Départ — heure" type="time" value={checkOutTime} onChange={setCheckOutTime} />
+                  </View>
+
+                  {capacity > 1 ? (
+                    <>
+                      <Text style={styles.sectionTitle}>Autres personnes dans la chambre</Text>
+                      <Text style={styles.meta}>
+                        Capacité {capacity} · {companions.length} accompagnant{companions.length > 1 ? 's' : ''} / {capacity - 1}
+                      </Text>
+                      {companions.map((row, index) => (
+                        <View key={index} style={styles.companion}>
+                          <Text style={styles.compTitle}>Occupant {index + 2}</Text>
+                          <View style={styles.formGrid}>
+                            <Field
+                              label="Nom"
+                              value={row.last_name}
+                              onChange={(last_name) =>
+                                setCompanions(companions.map((item, i) => (i === index ? { ...item, last_name } : item)))
+                              }
+                            />
+                            <Field
+                              label="Prénom"
+                              value={row.first_name}
+                              onChange={(first_name) =>
+                                setCompanions(companions.map((item, i) => (i === index ? { ...item, first_name } : item)))
+                              }
+                            />
+                            <Field
+                              label="Téléphone"
+                              type="tel"
+                              value={row.phone}
+                              onChange={(phone) =>
+                                setCompanions(companions.map((item, i) => (i === index ? { ...item, phone } : item)))
+                              }
+                            />
+                            <Field
+                              label="N° CNI"
+                              value={row.document_id}
+                              onChange={(document_id) =>
+                                setCompanions(companions.map((item, i) => (i === index ? { ...item, document_id } : item)))
+                              }
+                            />
+                          </View>
+                        </View>
+                      ))}
+                      {companions.length < capacity - 1 ? (
+                        <GoldBtn
+                          compact
+                          icon="plus"
+                          variant="ghost"
+                          label="Ajouter un occupant"
+                          onPress={() => setCompanions([...companions, emptyPerson()])}
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
+
+                  <GoldBtn
+                    icon={editingId ? 'edit' : 'check-circle'}
+                    label={saving ? 'Enregistrement…' : editingId ? 'Enregistrer les modifications' : 'Confirmer la réservation'}
+                    onPress={() => void confirm()}
+                  />
+                </>
+              )}
+            </ScrollView>
+          </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+      <ConfirmDialog
+        visible={Boolean(pendingCancel)}
+        title="Annuler la réservation ?"
+        message={
+          pendingCancel
+            ? `Souhaitez-vous vraiment annuler le séjour de ${pendingCancel.guest_name} (ch. ${pendingCancel.room_number}) ?`
+            : ''
+        }
+        cancelLabel="Retour"
+        confirmLabel="Confirmer l’annulation"
+        confirmIcon="x-circle"
+        onCancel={() => setPendingCancel(null)}
+        onConfirm={() => {
+          if (!token || !pendingCancel) return;
+          const id = pendingCancel.id;
+          setPendingCancel(null);
+          void pmsPost(token, `reservations/${id}/cancel`).then(reload);
+        }}
+      />
+      <ConfirmDialog
+        visible={Boolean(pendingBadge)}
+        title="Générer un nouveau badge ?"
+        message={
+          pendingBadge
+            ? `Un nouveau badge sera créé pour ${pendingBadge.guest_name}. L’ancien badge de ce séjour sera annulé et restera visible dans l’historique.`
+            : ''
+        }
+        cancelLabel="Retour"
+        confirmLabel="Générer"
+        confirmIcon="id-card"
+        confirmVariant="gold"
+        onCancel={() => setPendingBadge(null)}
+        onConfirm={() => {
+          if (pendingBadge) void issueStayBadges(pendingBadge.id);
+        }}
+      />
+      <Modal visible={previewBadges.length > 0} transparent animationType="fade" onRequestClose={() => setPreviewBadges([])}>
+        <View style={styles.overlay}>
+          <Pressable style={styles.overlayFill} onPress={() => setPreviewBadges([])} />
+          <View style={styles.sheet}>
+            <ScrollView contentContainerStyle={styles.sheetInner}>
+              <Text style={styles.sheetTitle}>Badges générés</Text>
+              <Text style={styles.meta}>Les anciens badges de ce séjour sont désormais annulés.</Text>
+              <View style={styles.badgeRow}>
+                {previewBadges.map((badge) => (
+                  <GuestBadgeCard key={badge.code} badge={badge} width={280} />
+                ))}
+              </View>
+              <GoldBtn icon="receipt" label="Imprimer les badges" onPress={() => printGuestBadges(previewBadges)} />
+              <GoldBtn
+                icon="id-card"
+                label="Voir l’historique"
+                variant="ghost"
+                onPress={() => {
+                  setPreviewBadges([]);
+                  router.push('/badges' as Href);
+                }}
+              />
+              <GoldBtn icon="x-circle" label="Fermer" variant="ghost" onPress={() => setPreviewBadges([])} />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+function roomTone(room: RoomRow): 'gold' | 'ink' | 'muted' {
+  if (room.status === 'maintenance' || room.hk_status === 'maintenance') return 'muted';
+  if (room.bucket === 'disponible') return 'gold';
+  if (room.bucket === 'occupee') return 'ink';
+  return 'muted';
+}
+
+function roomInHk(room: RoomRow) {
+  return (
+    room.status === 'maintenance' ||
+    room.status === 'nettoyage' ||
+    room.hk_status === 'en_cours' ||
+    room.hk_status === 'non_prise' ||
+    room.hk_status === 'maintenance'
+  );
+}
+
+function roomBucketLabel(room: RoomRow) {
+  if (room.status === 'maintenance' || room.hk_status === 'maintenance') return 'Maintenance';
+  if (room.bucket === 'occupee' && roomInHk(room)) return 'Occupée · Entretien';
+  if (room.bucket === 'disponible') return 'Disponible';
+  if (room.bucket === 'occupee') return 'Occupée';
+  return 'Entretien';
+}
+
+function RoomCard({
+  room,
+  width,
+  onBook,
+  onDetails,
+}: {
+  room: RoomRow;
+  width: number;
+  onBook: () => void;
+  onDetails: () => void;
+}) {
+  const label = roomBucketLabel(room);
+  return (
+    <View style={[styles.roomCard, { width }]}>
+      <Pressable onPress={onDetails} style={styles.roomPhotoWrap}>
+        <Image source={{ uri: room.photo }} style={styles.roomPhoto} contentFit="cover" />
+        <View style={[styles.roomFlag, room.bucket === 'disponible' ? styles.roomFlagFree : styles.roomFlagBusy]}>
+          <Text style={[styles.roomFlagText, room.bucket === 'disponible' && styles.roomFlagTextFree]}>{label}</Text>
+        </View>
+      </Pressable>
+      <View style={styles.roomBody}>
+        <View style={styles.roomHead}>
+          <Text style={styles.roomNumber}>{room.number}</Text>
+          <StatusBadge label={label} tone={roomTone(room)} />
+        </View>
+        <Text style={styles.roomType}>{room.type}</Text>
+        {room.occupant ? (
+          <Text style={styles.roomMeta} numberOfLines={1}>
+            Occupée · {room.occupant.name} · jusqu’au {prettyWhen(room.occupant.check_out, room.occupant.check_out_time)}
+          </Text>
+        ) : roomInHk(room) ? (
+          <Text style={styles.roomMeta}>
+            {room.status === 'maintenance' ? 'Maintenance' : 'Entretien'} · étage {room.floor ?? '—'}
+          </Text>
+        ) : (
+          <Text style={styles.roomMeta}>
+            Étage {room.floor ?? '—'} · {room.capacity ?? 2} pers.
+          </Text>
+        )}
+        <Text style={styles.roomPrice}>{money(room.price_night)} / nuit</Text>
+        <View style={styles.roomActions}>
+          <GoldBtn tiny icon="calendar" label="Réserver" onPress={onBook} />
+          <GoldBtn tiny icon="show" label="Détail" variant="ghost" onPress={onDetails} />
+        </View>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  kicker: { color: Palette.ink, fontWeight: '800', fontSize: 15 },
-  meta: { color: Palette.ink, opacity: 0.6, fontSize: 13 },
+  tabs: { flexDirection: 'row', flexWrap: 'nowrap', alignItems: 'center', gap: 8 },
+  typeList: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  typeCard: {
+    backgroundColor: Palette.white,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Palette.gold,
+    borderBottomWidth: 4,
+    borderBottomColor: Palette.ink,
+    shadowColor: Palette.ink,
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 8,
+  },
+  typeCardHover: {
+    transform: [{ translateY: -3 }],
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+  },
+  typeCardPress: {
+    transform: [{ translateY: 2 }],
+    borderBottomWidth: 2,
+    shadowOpacity: 0.08,
+  },
+  typeIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: Palette.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+    borderBottomWidth: 3,
+    borderBottomColor: Palette.ink,
+  },
+  typeName: { color: Palette.ink, fontWeight: '800', fontSize: 15 },
+  typeStats: { color: Palette.ink, opacity: 0.55, fontSize: 11, lineHeight: 15 },
+  typePrice: { color: Palette.gold, fontWeight: '800', fontSize: 13 },
+  roomGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
+  roomCard: {
+    backgroundColor: Palette.white,
+    borderRadius: Radius.card,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(20,22,34,0.08)',
+  },
+  roomPhotoWrap: { position: 'relative' },
+  roomPhoto: { width: '100%', aspectRatio: 4 / 3, backgroundColor: Palette.ink },
+  roomFlag: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    maxWidth: '80%',
+  },
+  roomFlagFree: { backgroundColor: Palette.gold },
+  roomFlagBusy: { backgroundColor: Palette.ink },
+  roomFlagText: { color: Palette.white, fontWeight: '800', fontSize: 11 },
+  roomFlagTextFree: { color: Palette.ink },
+  roomBody: { padding: 14, gap: 5 },
+  roomHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  empty: { color: Palette.ink, opacity: 0.6 },
+  roomNumber: { color: Palette.ink, fontSize: 20, fontWeight: '800' },
+  roomType: { color: Palette.ink, fontWeight: '700', opacity: 0.75 },
+  roomMeta: { color: Palette.ink, opacity: 0.55, fontSize: 12 },
+  roomPrice: { color: Palette.gold, fontWeight: '800', fontSize: 14, marginTop: 2 },
+  roomActions: { flexDirection: 'row', flexWrap: 'nowrap', gap: 8, marginTop: 8 },
+  meta: { color: Palette.ink, opacity: 0.58, fontSize: 13 },
+  goldLine: { color: Palette.gold, fontWeight: '800', fontSize: 13 },
+  sectionTitle: { color: Palette.ink, fontWeight: '800', fontSize: 18 },
+  back: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 6 },
+  backText: { color: Palette.ink, fontWeight: '800' },
+  stayHead: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
+  stayName: { color: Palette.ink, fontWeight: '800', fontSize: 16 },
+  flex: { flex: 1, minWidth: 0 },
+  stayList: { gap: 12 },
+  stayCard: {
+    backgroundColor: Palette.white,
+    borderRadius: 18,
+    padding: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(20,22,34,0.08)',
+  },
+  stayCardHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  stayLine: { color: Palette.ink, opacity: 0.7, fontSize: 13 },
+  table: { borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(20,22,34,0.08)' },
+  tr: { flexDirection: 'row', alignItems: 'center', backgroundColor: Palette.white, paddingVertical: 12, paddingHorizontal: 12 },
+  trAlt: { backgroundColor: 'rgba(20,22,34,0.03)' },
+  th: { backgroundColor: 'rgba(20,22,34,0.04)' },
+  thText: { color: Palette.ink, opacity: 0.55, fontWeight: '800', fontSize: 11, textTransform: 'uppercase' },
+  td: { paddingRight: 10 },
+  colClient: { flexGrow: 1.6, flexShrink: 1, flexBasis: 160, minWidth: 140 },
+  colRoom: { width: 86, color: Palette.ink, fontWeight: '700', fontSize: 14 },
+  colType: { flexGrow: 1, flexShrink: 1, flexBasis: 110, minWidth: 90, color: Palette.ink, fontSize: 13 },
+  colDate: { flexGrow: 1.1, flexShrink: 1, flexBasis: 140, minWidth: 128, color: Palette.ink, fontSize: 13 },
+  colStatus: { width: 118 },
+  colTotal: { width: 110 },
+  colActions: { minWidth: 260, width: 280, flexGrow: 0, flexShrink: 0 },
+  clientName: { color: Palette.ink, fontWeight: '800', fontSize: 15 },
+  lot: { color: Palette.ink, opacity: 0.5, fontSize: 12, marginTop: 2 },
+  total: { color: Palette.ink, fontWeight: '800', fontSize: 14 },
+  actionBtns: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: Palette.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconDanger: { backgroundColor: Palette.ink },
+  formError: { color: Palette.ink, fontWeight: '700', backgroundColor: 'rgba(212,175,55,0.18)', padding: 10, borderRadius: 12 },
+  overlay: { flex: 1, justifyContent: 'center', padding: 18 },
+  overlayFill: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(20,22,34,0.55)', zIndex: 0 },
+  sheetWrap: { zIndex: 2, width: '100%', maxHeight: '92%' },
+  sheet: {
+    maxHeight: '92%',
+    maxWidth: 720,
+    width: '100%',
+    alignSelf: 'center',
+    backgroundColor: Palette.white,
+    borderRadius: Radius.card,
+    borderWidth: 1,
+    borderColor: Palette.gold,
+    overflow: 'hidden',
+    zIndex: 2,
+  },
+  sheetInner: { padding: 20, gap: 12 },
+  sheetHead: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  sheetKicker: { color: Palette.gold, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', fontSize: 11 },
+  sheetTitle: { color: Palette.ink, fontSize: 22, fontWeight: '800' },
+  notice: {
+    borderWidth: 1,
+    borderColor: Palette.gold,
+    borderRadius: 16,
+    padding: 12,
+    gap: 4,
+    backgroundColor: 'rgba(212,175,55,0.08)',
+  },
+  noticeTitle: { color: Palette.ink, fontWeight: '800' },
+  formGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  field: { gap: 6, minWidth: 240, flexGrow: 1, flexBasis: 240 },
+  fieldLabel: { color: Palette.ink, fontWeight: '700', fontSize: 12 },
   input: {
     borderWidth: 1,
     borderColor: 'rgba(20,22,34,0.14)',
@@ -252,24 +1132,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     color: Palette.ink,
-    marginTop: 8,
   },
-  roomCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: Palette.white,
-    borderRadius: Radius.card,
-    padding: 10,
+  companion: {
     borderWidth: 1,
     borderColor: 'rgba(20,22,34,0.08)',
+    borderRadius: 18,
+    padding: 12,
+    gap: 8,
   },
-  roomOn: { borderColor: Palette.gold, backgroundColor: 'rgba(212,175,55,0.08)' },
-  thumb: { width: 84, height: 72, borderRadius: 18, backgroundColor: Palette.ink },
-  roomTitle: { color: Palette.ink, fontWeight: '800' },
-  planHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 },
-  planLabel: { color: Palette.ink, fontSize: 12, fontWeight: '800' },
-  planRoom: { width: 40 },
-  planDay: { width: 28, color: Palette.ink, fontSize: 11, textAlign: 'center', opacity: 0.55 },
-  planCell: { width: 28, height: 22, borderRadius: 8 },
+  compTitle: { color: Palette.ink, fontWeight: '800' },
+  badgeWrap: { gap: 14 },
+  badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 18, paddingVertical: 8 },
 });

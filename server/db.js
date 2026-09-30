@@ -79,6 +79,7 @@ function publicUser(user) {
     last_login: user.last_login ?? null,
     photo: user.photo ?? null,
     role: user.role ?? 'client',
+    status: user.status || 'actif',
   };
 }
 
@@ -202,6 +203,13 @@ function ensureSchema() {
       label TEXT NOT NULL
     )
   `);
+}
+
+function localDay(offset = 0) {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function seedIfEmpty() {
@@ -340,12 +348,12 @@ function seedIfEmpty() {
   }
 
   const reservations = [
-    [1, 2, '2026-09-28', '2026-10-02', 'en_cours', 180000],
-    [2, 6, '2026-09-27', '2026-10-01', 'en_cours', 500000],
-    [3, 11, '2026-09-29', '2026-10-03', 'confirmee', 288000],
-    [4, 5, '2026-09-20', '2026-09-24', 'terminee', 288000],
-    [5, 9, '2026-10-04', '2026-10-08', 'confirmee', 840000],
-    [1, 4, '2026-09-25', '2026-09-27', 'terminee', 90000],
+    [1, 2, localDay(-2), localDay(0), 'en_cours', 180000],
+    [2, 6, localDay(-3), localDay(0), 'en_cours', 500000],
+    [3, 11, localDay(-1), localDay(3), 'confirmee', 288000],
+    [4, 5, localDay(-10), localDay(-6), 'terminee', 288000],
+    [5, 9, localDay(4), localDay(8), 'confirmee', 840000],
+    [1, 4, localDay(-5), localDay(-3), 'terminee', 90000],
   ];
   for (const row of reservations) {
     run(
@@ -353,6 +361,8 @@ function seedIfEmpty() {
       row,
     );
   }
+  run("UPDATE reservations SET check_in_time = '14:00', check_out_time = '08:00' WHERE room_id = 2 AND status = 'en_cours'");
+  run("UPDATE reservations SET check_in_time = '14:00', check_out_time = '09:30' WHERE room_id = 6 AND status = 'en_cours'");
 
   const services = [
     ['Spa & massage', 'Soin 60 minutes, huiles locales.', 25000, 'spa'],
@@ -389,12 +399,18 @@ function seedStaffAccounts() {
     ['Amina Koffi', 'reception@myhotel.test', 'receptionist'],
     ['Jean-Marc Yao', 'gerant@myhotel.test', 'manager'],
     ['Koffi Mensah', 'entretien@myhotel.test', 'housekeeping'],
+    ['Fatou Diarra', 'fatou@myhotel.test', 'housekeeping'],
     ['Lucie Bamba', 'proprio@myhotel.test', 'owner'],
   ];
   for (const [fullName, email, role] of accounts) {
     const existing = get('SELECT id FROM users WHERE email = ?', [email]);
     if (existing) {
-      run('UPDATE users SET role = ?, full_name = ? WHERE id = ?', [role, fullName, existing.id]);
+      run('UPDATE users SET role = ?, full_name = ?, password_hash = ? WHERE id = ?', [
+        role,
+        fullName,
+        password,
+        existing.id,
+      ]);
     } else {
       run('INSERT INTO users (full_name, email, password_hash, role) VALUES (?, ?, ?, ?)', [
         fullName,
@@ -429,6 +445,12 @@ async function openDatabase() {
   seedIfEmpty();
   seedPms({ all, get, run, lastId });
   seedStaffAccounts();
+  try {
+    const { releaseExpiredStays } = require('./pms-routes');
+    releaseExpiredStays({ all, get, run });
+  } catch {
+    /* ignore */
+  }
   persist();
   return {
     all,
@@ -442,4 +464,4 @@ async function openDatabase() {
   };
 }
 
-module.exports = { openDatabase };
+module.exports = { openDatabase, DATA_DIR };

@@ -1,6 +1,8 @@
 const http = require('http');
-const { openDatabase } = require('./db');
-const { handlePms } = require('./pms-routes');
+const fs = require('fs');
+const path = require('path');
+const { openDatabase, DATA_DIR } = require('./db');
+const { handlePms, markReadyRoomsDisponible, releaseExpiredStays } = require('./pms-routes');
 
 const PORT = Number(process.env.MYHOTEL_API_PORT || 3847);
 
@@ -110,10 +112,14 @@ function requireUser(db, req, res) {
     fail(res, 'Session expirée. Veuillez vous reconnecter.', 401);
     return null;
   }
+  if (String(user.status || 'actif') === 'banni') {
+    fail(res, 'Ce compte a été banni. Contactez le propriétaire.', 403);
+    return null;
+  }
   return user;
 }
 
-function withEquipment(db, room) {
+function withEquipment(db, room, withHistory = false) {
   const items = db.all(
     `SELECT e.id, e.name, e.category, e.icon
      FROM room_equipment re
@@ -122,9 +128,49 @@ function withEquipment(db, room) {
      ORDER BY e.category, e.name`,
     [room.id],
   );
-  const extra = db.all('SELECT url FROM room_photos WHERE room_id = ? ORDER BY sort, id', [room.id]).map((p) => p.url);
-  const photos = [room.photo, ...extra.filter((url) => url && url !== room.photo)];
-  return { ...room, equipment: items, photos };
+  const photoRows = db.all('SELECT url FROM room_photos WHERE room_id = ? ORDER BY sort, id', [room.id]).map((p) => p.url);
+  let videoRows = [];
+  try {
+    videoRows = db.all('SELECT url FROM room_videos WHERE room_id = ? ORDER BY sort, id', [room.id]).map((p) => p.url);
+  } catch {
+    videoRows = [];
+  }
+  const photos = [...photoRows];
+  if (room.photo && !photos.includes(room.photo)) photos.unshift(room.photo);
+  const videos = [...videoRows];
+  if (room.video && !videos.includes(room.video)) videos.unshift(room.video);
+  const payload = {
+    ...room,
+    equipment: items,
+    photos,
+    videos,
+    photo: photos[0] || room.photo,
+    video: videos[0] || room.video || null,
+  };
+  if (!withHistory) return payload;
+  payload.history = db.all(
+    `SELECT r.id, g.full_name AS guest_name, g.phone AS guest_phone, r.check_in, r.check_out,
+            r.check_in_time, r.check_out_time, r.status, r.total
+     FROM reservations r JOIN guests g ON g.id = r.guest_id
+     WHERE r.room_id = ?
+     ORDER BY r.check_in DESC`,
+    [room.id],
+  );
+  return payload;
+}
+
+function mimeFromName(name) {
+  const ext = String(name || '').toLowerCase().split('.').pop();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'mp4') return 'video/mp4';
+  if (ext === 'webm') return 'video/webm';
+  if (ext === 'mov') return 'video/quicktime';
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'txt') return 'text/plain; charset=utf-8';
+  return 'application/octet-stream';
 }
 
 function createRequestHandler(db) {
@@ -136,6 +182,29 @@ function createRequestHandler(db) {
       }
 
       const pathName = requestPath(req);
+
+      if (req.method === 'GET' && pathName.startsWith('/uploads/chat/')) {
+        const name = path.basename(pathName);
+        if (!/^[\w.-]+$/.test(name)) {
+          fail(res, 'Fichier introuvable.', 404);
+          return;
+        }
+        const file = path.join(DATA_DIR, 'chat', name);
+        if (!fs.existsSync(file)) {
+          fail(res, 'Fichier introuvable.', 404);
+          return;
+        }
+        const buf = fs.readFileSync(file);
+        res.writeHead(200, {
+          'Content-Type': mimeFromName(name),
+          'Content-Length': buf.length,
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'private, max-age=86400',
+          'Content-Disposition': 'inline',
+        });
+        res.end(buf);
+        return;
+      }
 
       if (req.method === 'GET' && pathName === '/health') {
         ok(res, { status: 'ok', engine: 'sqlite' });
@@ -151,6 +220,10 @@ function createRequestHandler(db) {
         const user = db.get('SELECT * FROM users WHERE email = ? LIMIT 1', [email]);
         if (!user || !db.verifyPassword(password, user.password_hash)) {
           fail(res, 'E-mail ou mot de passe incorrect.', 401);
+          return;
+        }
+        if (String(user.status || 'actif') === 'banni') {
+          fail(res, 'Ce compte a été banni. Contactez le propriétaire.', 403);
           return;
         }
         db.run("UPDATE users SET last_login = datetime('now') WHERE id = ?", [user.id]);
@@ -347,6 +420,12 @@ function createRequestHandler(db) {
 
       if (req.method === 'GET' && pathName === '/rooms') {
         if (!requireUser(db, req, res)) return;
+        try {
+          releaseExpiredStays(db);
+        } catch {
+          /* ignore */
+        }
+        markReadyRoomsDisponible(db);
         const rooms = db.all('SELECT * FROM rooms ORDER BY number').map((room) => withEquipment(db, room));
         ok(res, rooms);
         return;
@@ -360,7 +439,7 @@ function createRequestHandler(db) {
           fail(res, 'Chambre introuvable.', 404);
           return;
         }
-        ok(res, withEquipment(db, room));
+        ok(res, withEquipment(db, room, true));
         return;
       }
 

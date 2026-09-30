@@ -81,7 +81,7 @@ function monthCells(year: number, month: number, createdAt?: string | null) {
 
 type ModalKind = 'name' | 'password' | null;
 
-export function ProfilePanel({ onClose }: { onClose: () => void }) {
+export function ProfilePanel({ onClose, embed }: { onClose: () => void; embed?: boolean }) {
   const router = useRouter();
   const { user, logout, updateProfile, updatePassword } = useAuth();
   const [cursor, setCursor] = useState(() => new Date());
@@ -162,7 +162,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <View style={styles.panel}>
-      <SafeAreaView edges={['top']} style={styles.header}>
+      <SafeAreaView edges={embed ? [] : ['top']} style={styles.header}>
         <View>
           <Text style={styles.kicker}>Compte</Text>
           <Text style={styles.headerTitle}>Mon espace</Text>
@@ -304,7 +304,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }) {
 
       </ScrollView>
 
-      <SafeAreaView edges={['bottom']} style={styles.footer}>
+      <SafeAreaView edges={embed ? [] : ['bottom']} style={styles.footer}>
         <Pressable onPress={onClose} style={styles.ghost}>
           <Text style={styles.ghostText}>Fermer</Text>
         </Pressable>

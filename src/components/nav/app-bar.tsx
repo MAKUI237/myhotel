@@ -2,7 +2,6 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppIcon } from '@/components/box-icon';
 import { BrandMark } from '@/components/brand/brand-mark';
-import { Hamburger } from '@/components/nav/hamburger';
 import { UserAvatar } from '@/components/profile/user-avatar';
 import { Brand } from '@/constants/config';
 import { Palette } from '@/constants/theme';
@@ -11,8 +10,6 @@ import { useAuth } from '@/context/auth-context';
 type AppBarProps = {
   onNotifications: () => void;
   onProfile: () => void;
-  onMenu?: () => void;
-  menuOpen?: boolean;
   showBrand?: boolean;
   notificationsOpen?: boolean;
   profileOpen?: boolean;
@@ -22,8 +19,6 @@ type AppBarProps = {
 export function AppBar({
   onNotifications,
   onProfile,
-  onMenu,
-  menuOpen,
   showBrand = true,
   notificationsOpen,
   profileOpen,
@@ -33,21 +28,14 @@ export function AppBar({
 
   return (
     <View style={styles.bar}>
-      <View style={styles.left}>
-        {onMenu ? (
-          <Pressable onPress={onMenu} hitSlop={8} style={[styles.iconBtn, menuOpen && styles.iconBtnOn]}>
-            <Hamburger />
-          </Pressable>
-        ) : null}
-        {showBrand ? (
-          <View style={styles.brand}>
-            <BrandMark size={32} />
-            <Text style={styles.name}>{Brand.name}</Text>
-          </View>
-        ) : (
-          <Text style={styles.pageHint}>{user?.full_name?.split(' ')[0]}</Text>
-        )}
-      </View>
+      {showBrand ? (
+        <View style={styles.brand}>
+          <BrandMark size={32} />
+          <Text style={styles.name}>{Brand.name}</Text>
+        </View>
+      ) : (
+        <Text style={styles.pageHint}>{user?.full_name?.split(' ')[0]}</Text>
+      )}
       <View style={styles.actions}>
         <Pressable
           onPress={onNotifications}
@@ -71,7 +59,7 @@ export function AppBar({
 const styles = StyleSheet.create({
   bar: {
     minHeight: 60,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
@@ -80,16 +68,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(20,22,34,0.06)',
   },
-  left: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexShrink: 1,
-  },
   brand: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flexShrink: 1,
   },
   name: {
     color: Palette.ink,

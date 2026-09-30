@@ -60,7 +60,7 @@ export function SideDrawer({
 
 const styles = StyleSheet.create({
   layer: {
-    zIndex: 40,
+    zIndex: 50,
   },
   overlay: {
     ...StyleSheet.absoluteFill,

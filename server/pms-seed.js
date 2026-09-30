@@ -187,16 +187,10 @@ function seedPms(db) {
   db.run("INSERT INTO warehouses (name, kind) VALUES ('Boutique lobby', 'pos')");
 
   const products = [
-    ['Riz parfumé 25kg', 'Épicerie', 'sac', 8, 4, 18000, 0, 1],
-    ['Huile 5L', 'Épicerie', 'bidon', 12, 6, 7500, 0, 1],
-    ['Eau minérale 1.5L', 'Boisson', 'pack', 40, 20, 2500, 3500, 1],
-    ['Poulet entier', 'Frais', 'kg', 18, 10, 2800, 0, 2],
-    ['Filet de capitaine', 'Frais', 'kg', 6, 8, 4500, 0, 2],
-    ['Cocktail Coco', 'Bar', 'u', 30, 12, 800, 6000, 3],
-    ['Bière 33cl', 'Bar', 'casier', 9, 6, 12000, 0, 3],
-    ['Savon d’accueil', 'Amenities', 'carton', 5, 3, 15000, 0, 1],
-    ['Carte postale', 'Boutique', 'u', 80, 20, 200, 1500, 4],
-    ['Pagne souvenir', 'Boutique', 'u', 14, 5, 4500, 12000, 4],
+    ['Eau minérale 1.5L', 'Accueil', 'u', 30, 12, 350, 800, 1],
+    ['Bière 33cl', 'Accueil', 'u', 24, 10, 500, 1500, 1],
+    ['Savon d’accueil', 'Magasin', 'u', 5, 15, 250, 0, 1],
+    ['Carte postale', 'Accueil', 'u', 40, 10, 100, 500, 4],
   ];
   for (const row of products) {
     db.run(

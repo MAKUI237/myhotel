@@ -9,6 +9,7 @@ export type ApiUser = {
   last_login?: string | null;
   photo?: string | null;
   role?: string | null;
+  status?: string | null;
 };
 
 export type AuthPayload = {
@@ -35,9 +36,21 @@ export type Room = {
   capacity: number;
   photo: string;
   photos?: string[];
+  videos?: string[];
   video?: string | null;
   description: string;
   equipment: EquipmentItem[];
+  history?: {
+    id: number;
+    guest_name: string;
+    guest_phone?: string | null;
+    check_in: string;
+    check_out: string;
+    check_in_time?: string;
+    check_out_time?: string;
+    status: string;
+    total: number;
+  }[];
 };
 
 export type StaffMember = {
@@ -123,9 +136,9 @@ export type DashboardStats = {
 type ApiSuccess<T> = { ok: true; data: T; message?: string };
 type ApiFailure = { ok: false; error: string };
 
-async function request<T>(path: string, init: RequestInit = {}, token?: string | null): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, token?: string | null, timeoutMs = 15000): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const headers = new Headers(init.headers);
@@ -160,7 +173,7 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string |
   } catch (error) {
     if (error instanceof Error) {
       if (error.name === 'AbortError') {
-        throw new Error('Le serveur met trop de temps à répondre.');
+        throw new Error('Impossible de joindre le serveur. Lancez l’API : npm run api');
       }
       if (error.message === 'Network request failed' || error.message.includes('Failed to fetch')) {
         throw new Error('Impossible de joindre le serveur. Lancez l’API MyHotel (npm run api).');
@@ -290,10 +303,27 @@ export function housekeepingRequest(token: string) {
   return request<{ rooms: Room[]; team: StaffMember[] }>('/housekeeping', { method: 'GET' }, token);
 }
 
+export type CompanyProfile = {
+  id?: number;
+  name: string;
+  legal_name?: string | null;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  nif?: string | null;
+  rccm?: string | null;
+  slogan?: string | null;
+  logo?: string | null;
+  stamp?: string | null;
+};
+
 export function pmsGet<T>(token: string, path: string) {
   return request<T>(`/pms/${path}`, { method: 'GET' }, token);
 }
 
-export function pmsPost<T>(token: string, path: string, body: Record<string, unknown> = {}) {
-  return request<T>(`/pms/${path}`, { method: 'POST', body: JSON.stringify(body) }, token);
+export function pmsPost<T>(token: string, path: string, body: Record<string, unknown> = {}, timeoutMs = 15000) {
+  return request<T>(`/pms/${path}`, { method: 'POST', body: JSON.stringify(body) }, token, timeoutMs);
 }

@@ -1,155 +1,405 @@
+import { Image } from 'expo-image';
 import { Redirect } from 'expo-router';
-import { useState } from 'react';
-import { Alert, Platform, Text, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 
-import { HotelShell, StatusBadge } from '@/components/hotel/hotel-shell';
-import { Chips, GoldBtn, Line, Panel } from '@/components/hotel/kit';
-import { Palette } from '@/constants/theme';
+import { AppIcon } from '@/components/box-icon';
+import { FilterBar } from '@/components/hotel/filter-bar';
+import { HotelShell } from '@/components/hotel/hotel-shell';
+import { GoldBtn } from '@/components/hotel/kit';
+import { Breakpoints, Palette, Radius } from '@/constants/theme';
 import { usePms } from '@/hooks/use-pms';
-import { pmsPost } from '@/lib/api';
-import { money } from '@/lib/format';
-import { printReceipt } from '@/lib/print';
+import { pmsGet, pmsPost, type CompanyProfile } from '@/lib/api';
+import { money, prettyStamp } from '@/lib/format';
+import { downloadSaleInvoice, printSaleInvoice, type SaleInvoice } from '@/lib/print';
 
-type Pos = {
-  outlets: Array<{ name: string; type: string; warehouse: string; seats: number }>;
-  sellers: Array<{ name: string; outlet: string }>;
-  sales: Array<{
-    outlet: string;
-    seller: string;
-    guest_name: string | null;
-    room_number: string | null;
-    total: number;
-    at: string;
-    item?: string;
-  }>;
-  menu: Array<{ name: string; price: number; category: string }>;
+type Product = {
+  id: number;
+  name: string;
+  stock: number;
+  price: number;
+  photo?: string | null;
+  kind?: string | null;
 };
 
-export default function PosScreen() {
-  const { data, error, loading, reload, token, user, ready } = usePms<Pos>('pos');
-  const [tab, setTab] = useState('caisse');
-  const [item, setItem] = useState('Café MyHotel');
-  const [amount, setAmount] = useState('2000');
-  const [guest, setGuest] = useState('Claire Dubois');
-  const [room, setRoom] = useState('102');
-  if (ready && !user) return <Redirect href="/welcome" />;
-  const seller = user?.full_name || 'Caisse';
+type Sale = SaleInvoice & {
+  outlet?: string | null;
+  item?: string | null;
+};
 
-  async function sell() {
+type Payload = { products: Product[]; sales: Sale[] };
+
+export default function PosScreen() {
+  const { data, error, loading, reload, token, user, ready } = usePms<Payload>('pos');
+  const { width } = useWindowDimensions();
+  const [productQuery, setProductQuery] = useState('');
+  const [query, setQuery] = useState('');
+  const [range, setRange] = useState('today');
+  const [cart, setCart] = useState<Record<number, number>>({});
+  const [guest, setGuest] = useState('');
+  const [room, setRoom] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [company, setCompany] = useState<CompanyProfile | null>(null);
+  const [invoice, setInvoice] = useState<SaleInvoice | null>(null);
+
+  const products = useMemo(() => data?.products ?? [], [data?.products]);
+  const sales = useMemo(() => data?.sales ?? [], [data?.sales]);
+  const today = new Date().toISOString().slice(0, 10);
+  const isDesktop = width >= Breakpoints.desktop;
+  const sideCart = width >= Breakpoints.tablet;
+  const tableMin = 980;
+
+  useEffect(() => {
     if (!token) return;
+    void pmsGet<CompanyProfile>(token, 'company').then(setCompany).catch(() => undefined);
+  }, [token]);
+
+  const visibleProducts = useMemo(() => {
+    const q = productQuery.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((item) => item.name.toLowerCase().includes(q));
+  }, [products, productQuery]);
+
+  const visibleSales = useMemo(() => {
+    return sales.filter((row) => {
+      const day = String(row.at || '').slice(0, 10);
+      if (range === 'today' && day !== today) return false;
+      const hay = `${row.seller ?? ''} ${row.guest_name ?? ''} ${row.room_number ?? ''} ${(row.items ?? []).map((item) => item.product_name).join(' ')} FAC-${String(row.id).padStart(5, '0')}`.toLowerCase();
+      if (query.trim() && !hay.includes(query.trim().toLowerCase())) return false;
+      return true;
+    });
+  }, [sales, query, range, today]);
+
+  const lines = useMemo(() => {
+    return Object.entries(cart)
+      .map(([id, qty]) => {
+        const product = products.find((item) => item.id === Number(id));
+        if (!product || qty <= 0) return null;
+        return { product, qty };
+      })
+      .filter(Boolean) as { product: Product; qty: number }[];
+  }, [cart, products]);
+
+  const cartTotal = lines.reduce((sum, line) => sum + line.qty * Number(line.product.price || 0), 0);
+
+  function add(product: Product) {
+    if (Number(product.stock) <= 0) return;
+    setCart((current) => {
+      const next = (current[product.id] || 0) + 1;
+      if (next > Number(product.stock)) return current;
+      return { ...current, [product.id]: next };
+    });
+  }
+
+  function dec(id: number) {
+    setCart((current) => {
+      const next = { ...current };
+      const value = (next[id] || 0) - 1;
+      if (value <= 0) delete next[id];
+      else next[id] = value;
+      return next;
+    });
+  }
+
+  async function checkout() {
+    if (!token || saving || !lines.length) return;
+    setSaving(true);
+    setFormError(null);
     try {
-      await pmsPost(token, 'pos/sale', {
-        outlet: 'Restaurant Le Palmier',
-        seller,
-        item,
-        total: Number(amount),
-        guest_name: guest,
-        room_number: room,
+      const sale = await pmsPost<SaleInvoice>(token, 'pos/sale', {
+        guest_name: guest.trim(),
+        room_number: room.trim(),
+        items: lines.map((line) => ({ product_id: line.product.id, qty: line.qty })),
       });
+      setCart({});
+      setGuest('');
+      setRoom('');
+      setInvoice(sale);
       await reload();
-      printReceipt({
-        title: 'Reçu de vente',
-        actor: seller,
-        total: money(Number(amount)),
-        rows: [
-          ['Article', item],
-          ['Client', guest || 'Comptoir'],
-          ['Chambre', room || '—'],
-          ['Vendeur', seller],
-          ['Montant', money(Number(amount))],
-        ],
-      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Erreur';
-      if (Platform.OS === 'web') globalThis.alert(message);
-      else Alert.alert(message);
+      setFormError(err instanceof Error ? err.message : 'Vente impossible.');
+    } finally {
+      setSaving(false);
     }
   }
 
+  if (ready && !user) return <Redirect href="/welcome" />;
+
   return (
-    <HotelShell
-      title="Points de vente"
-      subtitle="Chaque vente est au nom du vendeur connecté — reçus imprimables, FCFA"
-      loading={loading}
-      error={error}>
-      <Chips
-        value={tab}
-        onChange={setTab}
-        options={[
-          { id: 'caisse', label: 'Caisse' },
-          { id: 'points', label: 'Points de vente' },
-          { id: 'ventes', label: 'Ventes' },
+    <HotelShell title="Ventes" loading={loading && !data} error={error}>
+      <View style={[styles.shop, !sideCart && styles.shopStack]}>
+        <View style={styles.catalogCol}>
+          <FilterBar query={productQuery} onQuery={setProductQuery} queryPlaceholder="Rechercher un produit..." />
+          <View style={styles.catalog}>
+            {visibleProducts.map((item) => {
+              const inCart = cart[item.id] || 0;
+              const empty = Number(item.stock) <= 0;
+              return (
+                <Pressable
+                  key={item.id}
+                  onPress={() => add(item)}
+                  disabled={empty}
+                  style={[styles.product, empty && styles.productOff, inCart ? styles.productOn : null]}>
+                  {item.photo ? (
+                    <Image source={{ uri: item.photo }} style={styles.thumb} contentFit="cover" />
+                  ) : (
+                    <View style={styles.thumbEmpty}>
+                      <AppIcon name="cabinet" size={16} color={Palette.ink} />
+                    </View>
+                  )}
+                  <View style={styles.productCopy}>
+                    <Text style={styles.productName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <Text style={styles.productMeta}>
+                      {empty ? 'Rupture' : `${item.stock} en stock`} · {money(Number(item.price))}
+                    </Text>
+                  </View>
+                  {inCart ? <Text style={styles.qtyBadge}>{inCart}</Text> : null}
+                </Pressable>
+              );
+            })}
+          </View>
+          {!visibleProducts.length ? <Text style={styles.empty}>Aucun produit ne correspond.</Text> : null}
+        </View>
+
+        <View style={[styles.cart, sideCart && styles.cartSide]}>
+          <Text style={styles.section}>Panier</Text>
+          {lines.map((line) => (
+            <View key={line.product.id} style={styles.cartRow}>
+              <View style={styles.cartCopy}>
+                <Text style={styles.cartName} numberOfLines={1}>
+                  {line.product.name}
+                </Text>
+                <Text style={styles.cartPrice}>{money(line.qty * Number(line.product.price))}</Text>
+              </View>
+              <View style={styles.stepper}>
+                <Pressable onPress={() => dec(line.product.id)} style={styles.stepBtn}>
+                  <Text style={styles.stepLabel}>−</Text>
+                </Pressable>
+                <Text style={styles.stepQty}>{line.qty}</Text>
+                <Pressable onPress={() => add(line.product)} style={styles.stepBtn}>
+                  <Text style={styles.stepLabel}>+</Text>
+                </Pressable>
+              </View>
+            </View>
+          ))}
+          {!lines.length ? <Text style={styles.empty}>Sélectionnez un produit pour l’ajouter.</Text> : null}
+          <TextInput value={guest} onChangeText={setGuest} placeholder="Client (facultatif)" style={styles.input} />
+          <TextInput value={room} onChangeText={setRoom} placeholder="Chambre (facultatif)" style={styles.input} />
+          {formError ? <Text style={styles.formError}>{formError}</Text> : null}
+          <View style={styles.payRow}>
+            <Text style={styles.payTotal}>{money(cartTotal)}</Text>
+            <GoldBtn
+              compact
+              icon="wallet"
+              label={saving ? 'Encaissement…' : 'Encaisser'}
+              onPress={() => void checkout()}
+            />
+          </View>
+        </View>
+      </View>
+
+      {invoice ? (
+        <View style={styles.invoiceBox}>
+          <Text style={styles.section}>Facture FAC-{String(invoice.id).padStart(5, '0')}</Text>
+          <View style={styles.invoiceActions}>
+            <GoldBtn compact icon="printer" label="Imprimer" onPress={() => printSaleInvoice(invoice, company ?? {})} />
+            <GoldBtn compact icon="download" label="Télécharger PDF" variant="ghost" onPress={() => downloadSaleInvoice(invoice, company ?? {})} />
+            <GoldBtn compact icon="x-circle" label="Fermer" variant="ghost" onPress={() => setInvoice(null)} />
+          </View>
+        </View>
+      ) : null}
+
+      <Text style={styles.section}>Factures</Text>
+      <FilterBar
+        query={query}
+        onQuery={setQuery}
+        queryPlaceholder="Rechercher une facture..."
+        status={range}
+        onStatus={setRange}
+        statuses={[
+          { id: 'today', label: 'Aujourd’hui' },
+          { id: 'all', label: 'Toutes' },
         ]}
       />
-      {tab === 'caisse' ? (
-        <Panel>
-          <Text style={{ color: Palette.ink, fontWeight: '800' }}>Vente · {seller}</Text>
-          <TextInput value={item} onChangeText={setItem} placeholder="Article" style={input} />
-          <TextInput value={amount} onChangeText={setAmount} placeholder="Montant FCFA" keyboardType="numeric" style={input} />
-          <TextInput value={guest} onChangeText={setGuest} placeholder="Client en chambre (optionnel)" style={input} />
-          <TextInput value={room} onChangeText={setRoom} placeholder="N° chambre" style={input} />
-          <GoldBtn label="Encaisser et imprimer le reçu" onPress={() => void sell()} />
-          <View style={{ gap: 6 }}>
-            {data?.menu.slice(0, 6).map((m) => (
-              <Text key={m.name} style={{ color: Palette.ink }}>
-                {m.category} · {m.name} · {money(m.price)}
-              </Text>
-            ))}
+      <ScrollView horizontal={!isDesktop} showsHorizontalScrollIndicator={!isDesktop}>
+        <View style={[styles.table, { minWidth: isDesktop ? '100%' : tableMin, width: isDesktop ? '100%' : tableMin }]}>
+          <View style={[styles.tr, styles.th]}>
+            <Text style={[styles.td, styles.colRef, styles.thText]}>Facture</Text>
+            <Text style={[styles.td, styles.colClient, styles.thText]}>Client</Text>
+            <Text style={[styles.td, styles.colRoom, styles.thText]}>Chambre</Text>
+            <Text style={[styles.td, styles.colItems, styles.thText]}>Articles</Text>
+            <Text style={[styles.td, styles.colPrice, styles.thText, styles.num]}>Total</Text>
+            <Text style={[styles.td, styles.colDate, styles.thText]}>Date</Text>
+            <View style={[styles.td, styles.colActions]} />
           </View>
-        </Panel>
-      ) : null}
-      {tab === 'points'
-        ? data?.outlets.map((o) => (
-            <Panel key={o.name}>
-              <Line icon="restaurant" title={o.name} meta={`${o.type} · magasin ${o.warehouse} · ${o.seats} places`} />
-              {data.sellers
-                .filter((s) => s.outlet === o.name)
-                .map((s) => (
-                  <Text key={s.name} style={{ color: Palette.ink, opacity: 0.7 }}>
-                    Vendeur : {s.name}
-                  </Text>
-                ))}
-            </Panel>
-          ))
-        : null}
-      {tab === 'ventes'
-        ? data?.sales.map((s) => (
-            <Panel key={s.at + s.total + s.seller}>
-              <Line
-                icon="receipt"
-                title={`${s.outlet} · ${money(s.total)}`}
-                meta={`${s.seller} · ${s.at}${s.guest_name ? ` · ${s.guest_name} ch.${s.room_number}` : ' · comptoir'}`}
-                right={s.room_number ? <StatusBadge label="Folio chambre" tone="gold" /> : null}
-              />
-              <GoldBtn
-                label="Imprimer le reçu"
-                onPress={() =>
-                  printReceipt({
-                    title: 'Reçu de vente',
-                    actor: s.seller,
-                    total: money(s.total),
-                    rows: [
-                      ['Point de vente', s.outlet],
-                      ['Client', s.guest_name || 'Comptoir'],
-                      ['Chambre', s.room_number || '—'],
-                      ['Vendeur', s.seller],
-                      ['Date', s.at],
-                    ],
-                  })
-                }
-              />
-            </Panel>
-          ))
-        : null}
+          {visibleSales.map((row, index) => (
+            <View key={row.id} style={[styles.tr, index % 2 ? styles.trAlt : null]}>
+              <Text style={[styles.td, styles.colRef, styles.cellStrong]}>FAC-{String(row.id).padStart(5, '0')}</Text>
+              <Text style={[styles.td, styles.colClient, styles.cellText]} numberOfLines={1}>
+                {row.guest_name || 'Comptant'}
+              </Text>
+              <Text style={[styles.td, styles.colRoom, styles.cellText]}>{row.room_number || '—'}</Text>
+              <Text style={[styles.td, styles.colItems, styles.cellText]} numberOfLines={1}>
+                {(row.items ?? []).map((item) => `${item.product_name} ×${item.qty}`).join(', ') || '—'}
+              </Text>
+              <Text style={[styles.td, styles.colPrice, styles.num, styles.cellStrong]}>{money(row.total)}</Text>
+              <Text style={[styles.td, styles.colDate, styles.cellMeta]}>{prettyStamp(row.at)}</Text>
+              <View style={[styles.td, styles.colActions, styles.actionRow]}>
+                <Pressable style={styles.iconBtn} onPress={() => printSaleInvoice(row, company ?? {})}>
+                  <AppIcon name="printer" size={15} color={Palette.ink} />
+                </Pressable>
+                <Pressable style={[styles.iconBtn, styles.iconGhost]} onPress={() => downloadSaleInvoice(row, company ?? {})}>
+                  <AppIcon name="download" size={15} color={Palette.ink} />
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+      {!visibleSales.length ? <Text style={styles.empty}>Aucune facture dans ce filtre.</Text> : null}
     </HotelShell>
   );
 }
 
-const input = {
-  borderWidth: 1,
-  borderColor: Palette.ink,
-  borderRadius: 12,
-  paddingHorizontal: 12,
-  paddingVertical: 10,
-  color: Palette.ink,
-};
+const styles = StyleSheet.create({
+  shop: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  shopStack: { flexDirection: 'column' },
+  catalogCol: { flex: 1, minWidth: 0, gap: 8 },
+  catalog: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  product: {
+    width: 220,
+    flexGrow: 1,
+    flexBasis: 200,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: Palette.white,
+    borderRadius: 14,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: Palette.gold,
+  },
+  productOn: { borderBottomWidth: 3, borderBottomColor: Palette.ink },
+  productOff: { opacity: 0.45, borderColor: 'rgba(20,22,34,0.12)' },
+  thumb: { width: 40, height: 40, borderRadius: 10, backgroundColor: Palette.ink },
+  thumbEmpty: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: Palette.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  productCopy: { flex: 1, minWidth: 0 },
+  productName: { color: Palette.ink, fontWeight: '800', fontSize: 13 },
+  productMeta: { color: Palette.ink, opacity: 0.55, fontSize: 11 },
+  qtyBadge: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 8,
+    backgroundColor: Palette.ink,
+    color: Palette.gold,
+    textAlign: 'center',
+    fontWeight: '800',
+    overflow: 'hidden',
+    paddingHorizontal: 6,
+    lineHeight: 24,
+  },
+  cart: {
+    backgroundColor: Palette.white,
+    borderRadius: Radius.card,
+    padding: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Palette.gold,
+    width: '100%',
+  },
+  cartSide: { width: 320, flexShrink: 0 },
+  section: { color: Palette.ink, fontWeight: '800', fontSize: 16 },
+  cartRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  cartCopy: { flex: 1, minWidth: 0, gap: 2 },
+  cartName: { color: Palette.ink, fontWeight: '700' },
+  cartPrice: { color: Palette.gold, fontWeight: '800', fontSize: 12 },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Palette.gold,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  stepBtn: {
+    width: 32,
+    height: 32,
+    backgroundColor: Palette.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepLabel: { color: Palette.ink, fontWeight: '800', fontSize: 16, lineHeight: 18 },
+  stepQty: { minWidth: 28, textAlign: 'center', color: Palette.ink, fontWeight: '800' },
+  input: {
+    borderWidth: 1,
+    borderColor: 'rgba(20,22,34,0.14)',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: Palette.ink,
+  },
+  payRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 4 },
+  payTotal: { color: Palette.ink, fontWeight: '800', fontSize: 22 },
+  invoiceBox: {
+    backgroundColor: Palette.white,
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Palette.gold,
+  },
+  invoiceActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  table: {
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(20,22,34,0.08)',
+    backgroundColor: Palette.white,
+  },
+  tr: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Palette.white,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(20,22,34,0.06)',
+  },
+  trAlt: { backgroundColor: 'rgba(212,175,55,0.08)' },
+  th: { backgroundColor: 'rgba(20,22,34,0.03)', borderBottomColor: 'rgba(20,22,34,0.10)' },
+  thText: { color: Palette.ink, opacity: 0.55, fontWeight: '800', fontSize: 11, textTransform: 'uppercase' },
+  td: { paddingRight: 8 },
+  cellText: { color: Palette.ink, fontSize: 13, fontWeight: '600' },
+  cellStrong: { color: Palette.ink, fontSize: 13, fontWeight: '800' },
+  cellMeta: { color: Palette.ink, opacity: 0.55, fontSize: 12 },
+  colRef: { width: 110 },
+  colClient: { flex: 1, minWidth: 110 },
+  colRoom: { width: 80 },
+  colItems: { flex: 1.4, minWidth: 160 },
+  colPrice: { width: 110 },
+  colDate: { width: 140 },
+  colActions: { width: 86 },
+  num: { textAlign: 'right' },
+  actionRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 6 },
+  iconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: Palette.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconGhost: { backgroundColor: 'rgba(212,175,55,0.35)' },
+  empty: { color: Palette.ink, opacity: 0.6 },
+  formError: { color: Palette.ink, fontWeight: '700', backgroundColor: 'rgba(212,175,55,0.18)', padding: 10, borderRadius: 12 },
+});

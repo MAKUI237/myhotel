@@ -1,18 +1,18 @@
-import { type ReactNode, useState } from 'react';
 import { Redirect, usePathname, useRouter, type Href } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppIcon } from '@/components/box-icon';
 import { BrandMark } from '@/components/brand/brand-mark';
 import { AppBar } from '@/components/nav/app-bar';
+import { BottomTabBar } from '@/components/nav/bottom-tab-bar';
 import { RightDrawer } from '@/components/nav/right-drawer';
-import { SideDrawer } from '@/components/nav/side-drawer';
 import { NotificationsPanel } from '@/components/profile/notifications-panel';
 import { ProfilePanel } from '@/components/profile/profile-panel';
 import { Brand } from '@/constants/config';
-import { linksFor, ROLE_LABEL, isStaffRole } from '@/constants/roles';
+import { isStaffRole, linksFor, ROLE_LABEL } from '@/constants/roles';
 import { Breakpoints, Palette } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useNotifications } from '@/hooks/use-notifications';
@@ -38,6 +38,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 
   function go(href: string) {
     setMenuOpen(false);
+    setRight(null);
     router.push(href as Href);
   }
 
@@ -82,15 +83,15 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   const bar = (
     <AppBar
       showBrand={!isDesktop}
-      onMenu={isDesktop ? undefined : () => setMenuOpen((v) => !v)}
-      menuOpen={menuOpen}
       unread={unread}
       onNotifications={() => {
         void reload();
+        setMenuOpen(false);
         setPanel('notifications');
         setRight((c) => (c === 'notifications' ? null : 'notifications'));
       }}
       onProfile={() => {
+        setMenuOpen(false);
         setPanel('profile');
         setRight((c) => (c === 'profile' ? null : 'profile'));
       }}
@@ -98,6 +99,23 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
       profileOpen={right === 'profile'}
     />
   );
+
+  const drawer = panel === 'notifications' ? (
+          <NotificationsPanel
+            embed={!isDesktop}
+            items={items}
+            unread={unread}
+            onClose={() => setRight(null)}
+            onRead={(id) => void mark(id)}
+            onReadAll={() => void markAll()}
+            onOpen={(href) => {
+              setRight(null);
+              if (href) go(href);
+            }}
+          />
+        ) : (
+          <ProfilePanel embed={!isDesktop} onClose={() => setRight(null)} />
+        );
 
   return (
     <View style={styles.screen}>
@@ -115,29 +133,24 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           <SafeAreaView edges={['top']} style={styles.mobileTop}>
             {bar}
           </SafeAreaView>
-          <View style={styles.body}>{children}</View>
+          <View style={styles.body}>{menuOpen ? <View style={styles.mobileMenu}>{sidebar}</View> : right ? drawer : children}</View>
+          <BottomTabBar
+            links={links}
+            pathname={pathname}
+            menuOpen={menuOpen}
+            onNavigate={go}
+            onMenu={() => {
+              setRight(null);
+              setMenuOpen((v) => !v);
+            }}
+          />
         </View>
       )}
-      {!isDesktop ? (
-        <SideDrawer open={menuOpen} onClose={() => setMenuOpen(false)} side="left">
-          <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1 }}>
-            {sidebar}
-          </SafeAreaView>
-        </SideDrawer>
-      ) : null}
+      {isDesktop ? (
       <RightDrawer open={right !== null} onClose={() => setRight(null)}>
-        {panel === 'notifications' ? (
-          <NotificationsPanel
-            items={items}
-            unread={unread}
-            onClose={() => setRight(null)}
-            onRead={(id) => void mark(id)}
-            onReadAll={() => void markAll()}
-          />
-        ) : (
-          <ProfilePanel onClose={() => setRight(null)} />
-        )}
+        {drawer}
       </RightDrawer>
+      ) : null}
     </View>
   );
 }
@@ -190,8 +203,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   logoutText: { color: Palette.ink, fontWeight: '800' },
-  main: { flex: 1, backgroundColor: '#F6F7FA' },
-  body: { flex: 1 },
-  mobile: { flex: 1, backgroundColor: '#F6F7FA' },
+  main: { flex: 1, backgroundColor: '#F6F7FA', minHeight: 0 },
+  body: { flex: 1, minHeight: 0 },
+  mobile: { flex: 1, backgroundColor: '#F6F7FA', minHeight: 0 },
   mobileTop: { backgroundColor: Palette.white },
+  mobileMenu: { flex: 1, backgroundColor: Palette.ink, minHeight: 0 },
 });

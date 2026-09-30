@@ -22,7 +22,7 @@ function iconFor(category: string): BoxIconName {
   if (key.includes('RÉSA') || key.includes('RESA')) return 'calendar';
   if (key.includes('ÉTAGE') || key.includes('ETAGE')) return 'bed';
   if (key.includes('MAINT')) return 'cog';
-  if (key.includes('URGEN')) return 'error-circle';
+  if (key.includes('SIGNAL') || key.includes('URGEN')) return 'error-circle';
   return 'bell';
 }
 
@@ -32,16 +32,20 @@ export function NotificationsPanel({
   onClose,
   onRead,
   onReadAll,
+  onOpen,
+  embed,
 }: {
   items: HotelNotification[];
   unread: number;
   onClose: () => void;
   onRead: (id: number) => void;
   onReadAll: () => void;
+  onOpen?: (href?: string | null) => void;
+  embed?: boolean;
 }) {
   return (
     <View style={styles.panel}>
-      <SafeAreaView edges={['top']} style={styles.header}>
+      <SafeAreaView edges={embed ? [] : ['top']} style={styles.header}>
         <View style={styles.headerCopy}>
           <Text style={styles.kicker}>Centre d’alertes</Text>
           <View style={styles.titleRow}>
@@ -70,6 +74,7 @@ export function NotificationsPanel({
               key={item.id}
               onPress={() => {
                 if (!item.is_read) onRead(item.id);
+                onOpen?.(item.href);
               }}
               style={[styles.card, !item.is_read && styles.cardUnread]}>
               <View style={styles.iconBox}>
@@ -97,14 +102,16 @@ export function NotificationsPanel({
         )}
       </ScrollView>
 
-      <SafeAreaView edges={['bottom']} style={styles.footer}>
+      <SafeAreaView edges={embed ? [] : ['bottom']} style={styles.footer}>
         <Pressable onPress={onClose} style={styles.ghost}>
           <Text style={styles.ghostText}>Fermer</Text>
         </Pressable>
-        <Pressable onPress={onReadAll} style={styles.gold}>
-          <AppIcon name="check-circle" size={16} color={Palette.ink} />
-          <Text style={styles.goldText}>Tout lu</Text>
-        </Pressable>
+        {unread > 0 ? (
+          <Pressable onPress={onReadAll} style={styles.gold}>
+            <AppIcon name="check-circle" size={16} color={Palette.ink} />
+            <Text style={styles.goldText}>Tout lu</Text>
+          </Pressable>
+        ) : null}
       </SafeAreaView>
     </View>
   );

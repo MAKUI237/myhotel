@@ -23,6 +23,7 @@ type AuthFieldProps = {
   autoComplete?: TextInputProps['autoComplete'];
   textContentType?: TextInputProps['textContentType'];
   editable?: boolean;
+  onSubmitEditing?: TextInputProps['onSubmitEditing'];
 };
 
 export function AuthField({
@@ -36,6 +37,7 @@ export function AuthField({
   autoComplete,
   textContentType,
   editable = true,
+  onSubmitEditing,
 }: AuthFieldProps) {
   const [hidden, setHidden] = useState(Boolean(secureTextEntry));
 
@@ -53,6 +55,9 @@ export function AuthField({
         autoComplete={autoComplete}
         textContentType={textContentType}
         editable={editable}
+        returnKeyType={secureTextEntry ? 'done' : 'next'}
+        onSubmitEditing={onSubmitEditing}
+        blurOnSubmit={Boolean(onSubmitEditing)}
         style={[styles.input, Platform.OS === 'web' ? ({ outlineStyle: 'none' } as Record<string, string>) : null]}
       />
       {secureTextEntry ? (
