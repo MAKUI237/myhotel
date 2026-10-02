@@ -1,12 +1,13 @@
 import { Redirect } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 
+import { AppIcon } from '@/components/box-icon';
 import { FilterBar, FilterSelect } from '@/components/hotel/filter-bar';
-import { HotelShell, StatusBadge } from '@/components/hotel/hotel-shell';
+import { HotelShell } from '@/components/hotel/hotel-shell';
 import { ConfirmDialog, GoldBtn } from '@/components/hotel/kit';
 import { ROLE_LABEL, type StaffRole } from '@/constants/roles';
-import { Breakpoints, Palette, Radius } from '@/constants/theme';
+import { Breakpoints, Palette } from '@/constants/theme';
 import { usePms } from '@/hooks/use-pms';
 import { pmsPost } from '@/lib/api';
 import { prettyStamp, staffStatusLabel } from '@/lib/format';
@@ -57,12 +58,6 @@ function initials(name: string) {
     .join('');
 }
 
-function statusTone(status: string): 'gold' | 'ink' | 'muted' {
-  if (status === 'actif') return 'gold';
-  if (status === 'banni') return 'ink';
-  return 'muted';
-}
-
 export default function StaffScreen() {
   const { data, error, loading, reload, token, user, ready } = usePms<Payload>('employees');
   const { width } = useWindowDimensions();
@@ -71,14 +66,13 @@ export default function StaffScreen() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [form, setForm] = useState<FormState | null>(null);
   const [pendingBan, setPendingBan] = useState<Employee | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Employee | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const isOwner = user?.role === 'owner';
   const isDesktop = width >= Breakpoints.desktop;
-  const cols = width >= Breakpoints.tablet ? 3 : 1;
-  const available = (isDesktop ? width - 248 : width) - 36;
-  const cardWidth = Math.max(160, Math.floor((available - (cols - 1) * 12) / cols));
+  const tableMin = 980;
   const items = useMemo(() => data?.items ?? [], [data?.items]);
 
   const visible = useMemo(() => {
@@ -90,6 +84,27 @@ export default function StaffScreen() {
       return true;
     });
   }, [items, query, roleFilter, statusFilter]);
+
+  function openCreate() {
+    setFormError(null);
+    setForm({ ...emptyForm });
+  }
+
+  function openEdit(item: Employee) {
+    setFormError(null);
+    setForm({
+      id: item.id,
+      full_name: item.full_name,
+      email: item.email,
+      phone: item.phone || '',
+      role: item.role === 'owner' ? 'manager' : item.role,
+      password: '',
+    });
+  }
+
+  function canAct(item: Employee) {
+    return item.id !== user?.id && item.role !== 'owner';
+  }
 
   async function save() {
     if (!token || !form || saving) return;
@@ -131,6 +146,13 @@ export default function StaffScreen() {
     await reload();
   }
 
+  async function remove() {
+    if (!token || !pendingDelete) return;
+    await pmsPost(token, 'employees/delete', { id: pendingDelete.id });
+    setPendingDelete(null);
+    await reload();
+  }
+
   if (ready && !user) return <Redirect href="/welcome" />;
   if (ready && !isOwner) return <Redirect href="/home" />;
 
@@ -139,7 +161,7 @@ export default function StaffScreen() {
       title="Personnel"
       loading={loading && !data}
       error={error}
-      right={<GoldBtn compact icon="plus" label="Ajouter" onPress={() => { setFormError(null); setForm({ ...emptyForm }); }} />}>
+      right={<GoldBtn compact icon="plus" label="Ajouter" onPress={openCreate} />}>
       <FilterBar
         query={query}
         onQuery={setQuery}
@@ -155,55 +177,69 @@ export default function StaffScreen() {
           { id: 'banni', label: 'Bannis' },
         ]}
       />
-      <View style={styles.list}>
-        {visible.map((item) => {
-          const self = item.id === user?.id;
-          const ownerRow = item.role === 'owner';
-          return (
-            <View key={item.id} style={[styles.card, { width: cardWidth }]}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{initials(item.full_name)}</Text>
-              </View>
-              <View style={styles.copy}>
-                <View style={styles.head}>
-                  <Text style={styles.name} numberOfLines={1}>{item.full_name}</Text>
-                  <StatusBadge label={staffStatusLabel[item.status] ?? item.status} tone={statusTone(item.status)} />
-                </View>
-                <Text style={styles.role}>{ROLE_LABEL[item.role as StaffRole] ?? item.role}</Text>
-                <Text style={styles.meta} numberOfLines={1}>{item.email}</Text>
-                {item.phone ? <Text style={styles.meta}>{item.phone}</Text> : null}
-                <Text style={styles.meta}>
-                  {item.last_login ? `Dernière connexion ${prettyStamp(item.last_login)}` : 'Jamais connecté'}
-                </Text>
-                {self || ownerRow ? (
-                  <Text style={styles.hint}>{self ? 'Votre compte' : 'Compte propriétaire'}</Text>
-                ) : (
-                  <View style={styles.actions}>
-                    <GoldBtn tiny icon="edit" label="Modifier" onPress={() => {
-                      setFormError(null);
-                      setForm({
-                        id: item.id,
-                        full_name: item.full_name,
-                        email: item.email,
-                        phone: item.phone || '',
-                        role: item.role,
-                        password: '',
-                      });
-                    }} />
-                    <GoldBtn
-                      tiny
-                      icon={item.status === 'banni' ? 'show' : 'hide'}
-                      label={item.status === 'banni' ? 'Réactiver' : 'Bannir'}
-                      variant={item.status === 'banni' ? 'gold' : 'ink'}
-                      onPress={() => setPendingBan(item)}
-                    />
+
+      <ScrollView horizontal={!isDesktop} showsHorizontalScrollIndicator={!isDesktop}>
+        <View style={[styles.table, { minWidth: isDesktop ? '100%' : tableMin, width: isDesktop ? '100%' : tableMin }]}>
+          <View style={[styles.tr, styles.th]}>
+            <Text style={[styles.td, styles.colName, styles.thText]}>Nom</Text>
+            <Text style={[styles.td, styles.colRole, styles.thText]}>Rôle</Text>
+            <Text style={[styles.td, styles.colMail, styles.thText]}>E-mail</Text>
+            <Text style={[styles.td, styles.colPhone, styles.thText]}>Téléphone</Text>
+            <Text style={[styles.td, styles.colStatus, styles.thText]}>Statut</Text>
+            <View style={[styles.td, styles.colActions]} />
+          </View>
+          {visible.map((item, index) => {
+            const banned = item.status === 'banni';
+            const locked = !canAct(item);
+            return (
+              <View key={item.id} style={[styles.tr, index % 2 ? styles.trAlt : null, banned && styles.trUrgent]}>
+                <View style={[styles.td, styles.colName, styles.nameCell]}>
+                  <View style={styles.thumbEmpty}>
+                    <Text style={styles.thumbText}>{initials(item.full_name)}</Text>
                   </View>
-                )}
+                  <View style={styles.nameCopy}>
+                    <Text style={styles.name} numberOfLines={1}>{item.full_name}</Text>
+                    <Text style={styles.lot} numberOfLines={1}>
+                      {banned
+                        ? 'Compte banni'
+                        : item.last_login
+                          ? `Connexion ${prettyStamp(item.last_login)}`
+                          : 'Jamais connecté'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={[styles.td, styles.colRole, styles.cellText]} numberOfLines={1}>
+                  {ROLE_LABEL[item.role as StaffRole] ?? item.role}
+                </Text>
+                <Text style={[styles.td, styles.colMail, styles.cellText]} numberOfLines={1}>{item.email}</Text>
+                <Text style={[styles.td, styles.colPhone, styles.cellText]} numberOfLines={1}>{item.phone || '—'}</Text>
+                <Text style={[styles.td, styles.colStatus, styles.cellText]} numberOfLines={1}>
+                  {staffStatusLabel[item.status] ?? item.status}
+                </Text>
+                <View style={[styles.td, styles.colActions, styles.actionRow]}>
+                  {locked ? (
+                    <Text style={styles.locked}>—</Text>
+                  ) : (
+                    <>
+                      <Pressable style={styles.iconBtn} onPress={() => openEdit(item)}>
+                        <AppIcon name="edit" size={15} color={Palette.ink} />
+                      </Pressable>
+                      <Pressable style={styles.iconBtn} onPress={() => setPendingBan(item)}>
+                        <AppIcon name={banned ? 'show' : 'hide'} size={15} color={Palette.ink} />
+                      </Pressable>
+                      <Pressable
+                        style={[styles.iconBtn, styles.iconDanger]}
+                        onPress={() => setPendingDelete(item)}>
+                        <AppIcon name="trash" size={15} color={Palette.white} />
+                      </Pressable>
+                    </>
+                  )}
+                </View>
               </View>
-            </View>
-          );
-        })}
-      </View>
+            );
+          })}
+        </View>
+      </ScrollView>
       {!visible.length ? <Text style={styles.empty}>Aucun employé ne correspond.</Text> : null}
 
       <ConfirmDialog
@@ -227,7 +263,7 @@ export default function StaffScreen() {
               <TextInput
                 value={form.email}
                 onChangeText={(email) => setForm({ ...form, email })}
-                placeholder="employe@myhotel.test"
+                placeholder="employe@gmail.com"
                 autoCapitalize="none"
                 keyboardType="email-address"
                 style={styles.input}
@@ -269,41 +305,73 @@ export default function StaffScreen() {
         onCancel={() => setPendingBan(null)}
         onConfirm={() => void applyBan()}
       />
+
+      <ConfirmDialog
+        visible={!!pendingDelete}
+        title="Supprimer l’employé"
+        message={`Supprimer le compte de ${pendingDelete?.full_name ?? ''} ?`}
+        confirmLabel="Supprimer"
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => void remove()}
+      />
     </HotelShell>
   );
 }
 
 const styles = StyleSheet.create({
-  list: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  card: {
-    flexDirection: 'row',
-    gap: 12,
-    backgroundColor: Palette.white,
-    borderRadius: Radius.card,
-    padding: 16,
+  table: {
+    borderRadius: 16,
+    overflow: 'hidden',
     borderWidth: 1,
-    borderColor: Palette.gold,
-    alignItems: 'flex-start',
+    borderColor: 'rgba(20,22,34,0.08)',
+    backgroundColor: Palette.white,
   },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  tr: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Palette.white,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(20,22,34,0.06)',
+  },
+  trAlt: { backgroundColor: 'rgba(212,175,55,0.08)' },
+  trUrgent: { borderLeftWidth: 4, borderLeftColor: Palette.ink },
+  th: { backgroundColor: 'rgba(20,22,34,0.03)', borderBottomColor: 'rgba(20,22,34,0.10)' },
+  thText: { color: Palette.ink, opacity: 0.55, fontWeight: '800', fontSize: 11, textTransform: 'uppercase' },
+  td: { paddingRight: 8 },
+  cellText: { color: Palette.ink, fontSize: 13, fontWeight: '700' },
+  colName: { flex: 1.5, minWidth: 180 },
+  colRole: { width: 110 },
+  colMail: { flex: 1.2, minWidth: 160 },
+  colPhone: { width: 130 },
+  colStatus: { width: 88 },
+  colActions: { width: 128 },
+  nameCell: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  thumbEmpty: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     backgroundColor: Palette.gold,
     alignItems: 'center',
     justifyContent: 'center',
-    borderBottomWidth: 3,
-    borderBottomColor: Palette.ink,
   },
-  avatarText: { color: Palette.ink, fontWeight: '800', fontSize: 13 },
-  copy: { flex: 1, minWidth: 0, gap: 3 },
-  head: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
-  name: { color: Palette.ink, fontWeight: '800', fontSize: 16, flex: 1 },
-  role: { color: Palette.ink, fontWeight: '700', fontSize: 13 },
-  meta: { color: Palette.ink, opacity: 0.55, fontSize: 12 },
-  hint: { color: Palette.ink, opacity: 0.45, fontSize: 12, fontWeight: '700', marginTop: 6 },
-  actions: { flexDirection: 'row', flexWrap: 'nowrap', gap: 8, marginTop: 8 },
-  empty: { color: Palette.ink, opacity: 0.6 },
+  thumbText: { color: Palette.ink, fontWeight: '800', fontSize: 11 },
+  nameCopy: { flex: 1, minWidth: 0 },
+  name: { color: Palette.ink, fontWeight: '800', fontSize: 14 },
+  lot: { color: Palette.ink, opacity: 0.5, fontSize: 11, marginTop: 1 },
+  actionRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 6 },
+  iconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: Palette.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconDanger: { backgroundColor: Palette.ink },
+  locked: { color: Palette.ink, opacity: 0.35, fontWeight: '800' },
+  empty: { color: Palette.ink, opacity: 0.6, marginTop: 8 },
   fields: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   field: { minWidth: 140, flexGrow: 1, flexBasis: 140, gap: 6 },
   fieldWide: { minWidth: '100%', gap: 6 },

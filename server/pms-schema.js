@@ -1,62 +1,39 @@
-function addColumn(db, table, column, def) {
-  const cols = db.all(`PRAGMA table_info(${table})`).map((c) => c.name);
-  if (!cols.includes(column)) {
-    db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+const SCHEMA_VERSION = 'mysql-2';
+
+async function addColumn(db, table, column, def) {
+  const row = await db.get(
+    `SELECT COLUMN_NAME AS name
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [table, column],
+  );
+  if (row) return;
+  const exists = await db.get(
+    `SELECT TABLE_NAME AS name FROM INFORMATION_SCHEMA.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+    [table],
+  );
+  if (!exists) return;
+  await db.run(`ALTER TABLE \`${table}\` ADD COLUMN ${column} ${def}`);
+}
+
+async function widenColumn(db, table, column, def) {
+  const row = await db.get(
+    `SELECT DATA_TYPE AS t
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [table, column],
+  );
+  if (!row) return;
+  const type = String(row.t || '').toLowerCase();
+  if (type === 'mediumtext' || type === 'longtext') return;
+  if (type === 'text' || type === 'tinytext' || type === 'varchar' || type === 'blob') {
+    await db.run(`ALTER TABLE \`${table}\` MODIFY COLUMN \`${column}\` ${def}`);
   }
 }
 
-function ensurePmsSchema(db) {
-  db.run(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)`);
-
-  addColumn(db, 'users', 'last_login', 'TEXT');
-  addColumn(db, 'users', 'photo', 'TEXT');
-  addColumn(db, 'users', 'role', "TEXT NOT NULL DEFAULT 'client'");
-  addColumn(db, 'users', 'status', "TEXT NOT NULL DEFAULT 'actif'");
-
-  addColumn(db, 'guests', 'vip', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn(db, 'guests', 'document_id', 'TEXT');
-  addColumn(db, 'guests', 'loyalty_nights', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn(db, 'guests', 'first_name', 'TEXT');
-  addColumn(db, 'guests', 'last_name', 'TEXT');
-
-  addColumn(db, 'rooms', 'video', 'TEXT');
-  addColumn(db, 'hk_tasks', 'lead_name', 'TEXT');
-  addColumn(db, 'hk_tasks', 'started_at', 'TEXT');
-  addColumn(db, 'hk_tasks', 'finished_at', 'TEXT');
-  addColumn(db, 'hk_tasks', 'notes', 'TEXT');
-  addColumn(db, 'hk_tasks', 'created_at', 'TEXT');
-  addColumn(db, 'hk_issues', 'resolved_at', 'TEXT');
-  addColumn(db, 'hk_issues', 'resolved_by', 'TEXT');
-  addColumn(db, 'chat_messages', 'attachment_url', 'TEXT');
-  addColumn(db, 'chat_messages', 'attachment_name', 'TEXT');
-  addColumn(db, 'chat_messages', 'attachment_mime', 'TEXT');
-  addColumn(db, 'chat_messages', 'attachment_size', 'INTEGER');
-  addColumn(db, 'reservations', 'source', "TEXT NOT NULL DEFAULT 'reservation'");
-  addColumn(db, 'reservations', 'confirmed', 'INTEGER NOT NULL DEFAULT 1');
-  addColumn(db, 'reservations', 'notes', 'TEXT');
-  addColumn(db, 'reservations', 'deposit_amount', 'REAL NOT NULL DEFAULT 0');
-  addColumn(db, 'reservations', 'adults', 'INTEGER NOT NULL DEFAULT 1');
-  addColumn(db, 'reservations', 'children', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn(db, 'reservations', 'check_in_time', "TEXT NOT NULL DEFAULT '14:00'");
-  addColumn(db, 'reservations', 'check_out_time', "TEXT NOT NULL DEFAULT '12:00'");
-  addColumn(db, 'products', 'lot', 'TEXT');
-  addColumn(db, 'products', 'expires_at', 'TEXT');
-  addColumn(db, 'products', 'photo', 'TEXT');
-  addColumn(db, 'products', 'kind', "TEXT NOT NULL DEFAULT 'vente'");
-  addColumn(db, 'stock_moves', 'actor', 'TEXT');
-  addColumn(db, 'stock_moves', 'product_id', 'INTEGER');
-  addColumn(db, 'pos_sale_items', 'product_id', 'INTEGER');
-
-  addColumn(db, 'staff', 'contract_type', "TEXT DEFAULT 'CDI'");
-  addColumn(db, 'staff', 'salary_type', "TEXT DEFAULT 'Mensuel'");
-  addColumn(db, 'staff', 'salary_amount', 'REAL NOT NULL DEFAULT 0');
-  addColumn(db, 'staff', 'union_name', 'TEXT');
-  addColumn(db, 'staff', 'mutual_name', 'TEXT');
-  addColumn(db, 'staff', 'cnps_number', 'TEXT');
-  addColumn(db, 'staff', 'iban', 'TEXT');
-  addColumn(db, 'staff', 'departure_type', 'TEXT');
-  addColumn(db, 'staff', 'departure_at', 'TEXT');
-  addColumn(db, 'staff', 'id_number', 'TEXT');
+async function ensurePmsSchema(db) {
+  await db.run(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)`);
 
   const tables = [
     `CREATE TABLE IF NOT EXISTS lost_items (
@@ -522,17 +499,77 @@ function ensurePmsSchema(db) {
       nif TEXT,
       rccm TEXT,
       slogan TEXT,
-      logo TEXT,
-      stamp TEXT
+      logo MEDIUMTEXT,
+      stamp MEDIUMTEXT
     )`,
   ];
 
-  for (const sql of tables) db.run(sql);
-  addColumn(db, 'client_badges', 'reservation_id', 'INTEGER');
-  addColumn(db, 'client_badges', 'status', "TEXT NOT NULL DEFAULT 'actif'");
-  addColumn(db, 'client_badges', 'revoked_at', 'TEXT');
-  if (!db.get('SELECT id FROM company_profile WHERE id = 1')) {
-    db.run(
+  for (const sql of tables) await db.run(sql);
+
+  const version = await db.get("SELECT value FROM app_meta WHERE key = 'schema_version'");
+  const needsMigrate = !version || String(version.value) !== SCHEMA_VERSION;
+
+  if (needsMigrate) {
+  await addColumn(db, 'users', 'last_login', 'TEXT');
+  await addColumn(db, 'users', 'photo', 'MEDIUMTEXT');
+  await addColumn(db, 'users', 'role', "TEXT NOT NULL DEFAULT 'client'");
+  await addColumn(db, 'users', 'status', "TEXT NOT NULL DEFAULT 'actif'");
+
+  await addColumn(db, 'guests', 'vip', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(db, 'guests', 'document_id', 'TEXT');
+  await addColumn(db, 'guests', 'loyalty_nights', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(db, 'guests', 'first_name', 'TEXT');
+  await addColumn(db, 'guests', 'last_name', 'TEXT');
+
+  await addColumn(db, 'rooms', 'video', 'TEXT');
+  await addColumn(db, 'hk_tasks', 'lead_name', 'TEXT');
+  await addColumn(db, 'hk_tasks', 'started_at', 'TEXT');
+  await addColumn(db, 'hk_tasks', 'finished_at', 'TEXT');
+  await addColumn(db, 'hk_tasks', 'notes', 'TEXT');
+  await addColumn(db, 'hk_tasks', 'created_at', 'TEXT');
+  await addColumn(db, 'hk_issues', 'resolved_at', 'TEXT');
+  await addColumn(db, 'hk_issues', 'resolved_by', 'TEXT');
+  await addColumn(db, 'chat_messages', 'attachment_url', 'TEXT');
+  await addColumn(db, 'chat_messages', 'attachment_name', 'TEXT');
+  await addColumn(db, 'chat_messages', 'attachment_mime', 'TEXT');
+  await addColumn(db, 'chat_messages', 'attachment_size', 'INTEGER');
+  await addColumn(db, 'reservations', 'source', "TEXT NOT NULL DEFAULT 'reservation'");
+  await addColumn(db, 'reservations', 'confirmed', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumn(db, 'reservations', 'notes', 'TEXT');
+  await addColumn(db, 'reservations', 'deposit_amount', 'REAL NOT NULL DEFAULT 0');
+  await addColumn(db, 'reservations', 'adults', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumn(db, 'reservations', 'children', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumn(db, 'reservations', 'check_in_time', "TEXT NOT NULL DEFAULT '14:00'");
+  await addColumn(db, 'reservations', 'check_out_time', "TEXT NOT NULL DEFAULT '12:00'");
+  await addColumn(db, 'products', 'lot', 'TEXT');
+  await addColumn(db, 'products', 'expires_at', 'TEXT');
+  await addColumn(db, 'products', 'photo', 'TEXT');
+  await addColumn(db, 'products', 'kind', "TEXT NOT NULL DEFAULT 'vente'");
+  await addColumn(db, 'stock_moves', 'actor', 'TEXT');
+  await addColumn(db, 'stock_moves', 'product_id', 'INTEGER');
+  await addColumn(db, 'pos_sale_items', 'product_id', 'INTEGER');
+
+  await addColumn(db, 'staff', 'contract_type', "TEXT DEFAULT 'CDI'");
+  await addColumn(db, 'staff', 'salary_type', "TEXT DEFAULT 'Mensuel'");
+  await addColumn(db, 'staff', 'salary_amount', 'REAL NOT NULL DEFAULT 0');
+  await addColumn(db, 'staff', 'union_name', 'TEXT');
+  await addColumn(db, 'staff', 'mutual_name', 'TEXT');
+  await addColumn(db, 'staff', 'cnps_number', 'TEXT');
+  await addColumn(db, 'staff', 'iban', 'TEXT');
+  await addColumn(db, 'staff', 'departure_type', 'TEXT');
+  await addColumn(db, 'staff', 'departure_at', 'TEXT');
+  await addColumn(db, 'staff', 'id_number', 'TEXT');
+
+  await addColumn(db, 'client_badges', 'reservation_id', 'INTEGER');
+  await addColumn(db, 'client_badges', 'status', "TEXT NOT NULL DEFAULT 'actif'");
+  await addColumn(db, 'client_badges', 'revoked_at', 'TEXT');
+  await widenColumn(db, 'users', 'photo', 'MEDIUMTEXT');
+  await widenColumn(db, 'company_profile', 'logo', 'MEDIUMTEXT');
+  await widenColumn(db, 'company_profile', 'stamp', 'MEDIUMTEXT');
+  await db.run("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('schema_version', ?)", [SCHEMA_VERSION]);
+  }
+  if (!await db.get('SELECT id FROM company_profile WHERE id = 1')) {
+    await db.run(
       `INSERT INTO company_profile (id, name, legal_name, address, city, country, phone, email, website, nif, rccm, slogan)
        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -550,16 +587,16 @@ function ensurePmsSchema(db) {
       ],
     );
   }
-  seedNotifications(db);
-  seedWorkspace(db);
+  await seedNotifications(db);
+  await seedWorkspace(db);
 }
 
-function seedNotifications(db) {
-  if (Number(db.get('SELECT COUNT(*) AS n FROM notifications').n) > 0) return;
+async function seedNotifications(db) {
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM notifications')).n) > 0) return;
 
-  const users = db.all('SELECT full_name, email, created_at FROM users ORDER BY id DESC LIMIT 4');
+  const users = await db.all('SELECT full_name, email, created_at FROM users ORDER BY id DESC LIMIT 4');
   for (const user of users) {
-    db.run(
+    await db.run(
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [
@@ -580,7 +617,7 @@ function seedNotifications(db) {
     ['RÉSERVATION', 'Check-in du jour', 'Kwame Asante — chambre 201.', 1, "datetime('now', '-4 days')"],
   ];
   for (const [category, title, body, isRead, at] of extras) {
-    db.run(
+    await db.run(
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES (?, ?, ?, NULL, ?, ${at})`,
       [category, title, body, isRead],
@@ -588,109 +625,109 @@ function seedNotifications(db) {
   }
 }
 
-function seedWorkspace(db) {
-  if (Number(db.get('SELECT COUNT(*) AS n FROM room_photos').n) === 0) {
+async function seedWorkspace(db) {
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM room_photos')).n) === 0) {
     const extras = [
       'https://images.unsplash.com/photo-1611892440504-42a792e24d32?w=1200&q=80',
       'https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=1200&q=80',
       'https://images.unsplash.com/photo-1578683010236-d716f9a3f461?w=1200&q=80',
     ];
-    for (const room of db.all('SELECT id, photo FROM rooms')) {
-      db.run('INSERT INTO room_photos (room_id, url, sort) VALUES (?,?,?)', [room.id, room.photo, 0]);
-      extras.forEach((url, i) => {
-        db.run('INSERT INTO room_photos (room_id, url, sort) VALUES (?,?,?)', [room.id, url, i + 1]);
-      });
+    for (const room of await db.all('SELECT id, photo FROM rooms')) {
+      await db.run('INSERT INTO room_photos (room_id, url, sort) VALUES (?,?,?)', [room.id, room.photo, 0]);
+      for (let i = 0; i < extras.length; i += 1) {
+        await db.run('INSERT INTO room_photos (room_id, url, sort) VALUES (?,?,?)', [room.id, extras[i], i + 1]);
+      }
     }
   }
-  if (Number(db.get('SELECT COUNT(*) AS n FROM suggestions').n) === 0) {
-    db.run(
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM suggestions')).n) === 0) {
+    await db.run(
       `INSERT INTO suggestions (author, role, message, status, created_at)
        VALUES ('Amina Koffi', 'receptionist', 'Proposer un late check-out payant le dimanche.', 'ouverte', datetime('now', '-3 hours'))`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO suggestions (author, role, message, status, created_at)
        VALUES ('Koffi Mensah', 'housekeeping', 'Manque de kits d’accueil à l’étage 3.', 'ouverte', datetime('now', '-1 day'))`,
     );
   }
-  if (Number(db.get('SELECT COUNT(*) AS n FROM cash_moves').n) === 0) {
-    db.run(
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM cash_moves')).n) === 0) {
+    await db.run(
       `INSERT INTO cash_moves (kind, label, amount, actor, at)
        VALUES ('entree', 'Encaissement réservations', 180000, 'Jean-Marc Yao', datetime('now', '-2 hours'))`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO cash_moves (kind, label, amount, actor, at)
        VALUES ('sortie', 'Achat fournitures étages', 25000, 'Jean-Marc Yao', datetime('now', '-5 hours'))`,
     );
   }
-  if (Number(db.get('SELECT COUNT(*) AS n FROM staff_shifts').n) === 0) {
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM staff_shifts')).n) === 0) {
     const today = new Date().toISOString().slice(0, 10);
-    db.run('INSERT INTO staff_shifts (staff_name, day, start_hour, end_hour, task) VALUES (?,?,?,?,?)', [
+    await db.run('INSERT INTO staff_shifts (staff_name, day, start_hour, end_hour, task) VALUES (?,?,?,?,?)', [
       'Amina Koffi',
       today,
       '07:00',
       '15:00',
       'Réception matin',
     ]);
-    db.run('INSERT INTO staff_shifts (staff_name, day, start_hour, end_hour, task) VALUES (?,?,?,?,?)', [
+    await db.run('INSERT INTO staff_shifts (staff_name, day, start_hour, end_hour, task) VALUES (?,?,?,?,?)', [
       'Koffi Mensah',
       today,
       '08:00',
       '16:00',
       'Étages 2 et 3',
     ]);
-    db.run(
+    await db.run(
       "INSERT INTO work_tasks (title, assignee, day, status, notes, created_at) VALUES ('Contrôle linge étage 2', 'Koffi Mensah', ?, 'en_cours', 'Chariots et draps', datetime('now'))",
       [today],
     );
-    db.run(
+    await db.run(
       "INSERT INTO work_tasks (title, assignee, day, status, notes, created_at) VALUES ('Clôture caisse accueil', 'Amina Koffi', ?, 'a_faire', 'Remise au gérant', datetime('now'))",
       [today],
     );
   }
-  if (Number(db.get('SELECT COUNT(*) AS n FROM client_badges').n) === 0) {
-    db.run(
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM client_badges')).n) === 0) {
+    await db.run(
       `INSERT INTO client_badges (guest_name, room_number, valid_from, valid_to, code, created_by)
        VALUES ('Claire Dubois', '102', date('now'), date('now','+3 day'), 'MH-102-CL', 'Amina Koffi')`,
     );
   }
   const video =
     'https://videos.pexels.com/video-files/3770033/3770033-hd_1920_1080_25fps.mp4';
-  db.run('UPDATE rooms SET video = ? WHERE video IS NULL OR video = \'\'', [video]);
-  for (const row of db.all('SELECT id FROM staff WHERE id_number IS NULL OR id_number = \'\'')) {
-    db.run('UPDATE staff SET id_number = ? WHERE id = ?', [`CNI-00${1000 + row.id}`, row.id]);
+  await db.run('UPDATE rooms SET video = ? WHERE video IS NULL OR video = \'\'', [video]);
+  for (const row of await db.all('SELECT id FROM staff WHERE id_number IS NULL OR id_number = \'\'')) {
+    await db.run('UPDATE staff SET id_number = ? WHERE id = ?', [`CNI-00${1000 + row.id}`, row.id]);
   }
-  if (Number(db.get('SELECT COUNT(*) AS n FROM indemnity_lines').n) === 0) {
-    const people = db.all('SELECT id FROM staff ORDER BY id LIMIT 3');
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM indemnity_lines')).n) === 0) {
+    const people = await db.all('SELECT id FROM staff ORDER BY id LIMIT 3');
     const kinds = [
       ['licenciement', 180000, 'Indemnité de licenciement'],
       ['conges', 45000, 'Indemnité de congés'],
       ['preavis', 90000, 'Indemnité de préavis'],
     ];
-    people.forEach((person, i) => {
+    for (let i = 0; i < people.length; i += 1) {
       const row = kinds[i];
-      if (!row) return;
-      db.run('INSERT INTO indemnity_lines (staff_id, kind, amount, at, note) VALUES (?,?,?,?,?)', [
-        person.id,
+      if (!row) continue;
+      await db.run('INSERT INTO indemnity_lines (staff_id, kind, amount, at, note) VALUES (?,?,?,?,?)', [
+        people[i].id,
         row[0],
         row[1],
         new Date().toISOString().slice(0, 10),
         row[2],
       ]);
-    });
+    }
   }
-  if (!db.get("SELECT id FROM notifications WHERE category = 'URGENCE' LIMIT 1")) {
-    db.run(
+  if (!await db.get("SELECT id FROM notifications WHERE category = 'URGENCE' LIMIT 1")) {
+    await db.run(
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES ('ÉTAGES', 'Chambre libre à nettoyer', 'Chambre 106 libérée — passage entretien.', '/housekeeping', 0, datetime('now', '-40 minutes'))`,
     );
-    db.run(
+    await db.run(
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES ('URGENCE', 'Nettoyage urgent', 'Chambre 303 indisponible — intervention immédiate.', '/housekeeping', 0, datetime('now', '-12 minutes'))`,
     );
   }
 
   try {
-    db.run(
+    await db.run(
       `DELETE FROM hk_tasks WHERE status NOT IN ('pret','termine','controle')
        AND id NOT IN (
          SELECT id FROM (
@@ -703,26 +740,26 @@ function seedWorkspace(db) {
   }
 
   try {
-    if (Number(db.get('SELECT COUNT(*) AS n FROM hk_crew').n) === 0) {
-      const open = db.get("SELECT id FROM hk_tasks WHERE room_number = '202' ORDER BY id DESC LIMIT 1");
+    if (Number((await db.get('SELECT COUNT(*) AS n FROM hk_crew')).n) === 0) {
+      const open = await db.get("SELECT id FROM hk_tasks WHERE room_number = '202' ORDER BY id DESC LIMIT 1");
       if (open) {
-        db.run('INSERT INTO hk_crew (task_id, agent_name, is_lead) VALUES (?,?,1)', [open.id, 'Koffi Mensah']);
-        db.run('INSERT INTO hk_crew (task_id, agent_name, is_lead) VALUES (?,?,0)', [open.id, 'Fatou Diarra']);
-        db.run("UPDATE hk_tasks SET lead_name = 'Koffi Mensah', started_at = datetime('now','-40 minutes') WHERE id = ?", [
+        await db.run('INSERT INTO hk_crew (task_id, agent_name, is_lead) VALUES (?,?,1)', [open.id, 'Koffi Mensah']);
+        await db.run('INSERT INTO hk_crew (task_id, agent_name, is_lead) VALUES (?,?,0)', [open.id, 'Fatou Diarra']);
+        await db.run("UPDATE hk_tasks SET lead_name = 'Koffi Mensah', started_at = datetime('now','-40 minutes') WHERE id = ?", [
           open.id,
         ]);
       }
     }
-    if (Number(db.get('SELECT COUNT(*) AS n FROM hk_issues').n) === 0) {
-      db.run(
+    if (Number((await db.get('SELECT COUNT(*) AS n FROM hk_issues')).n) === 0) {
+      await db.run(
         `INSERT INTO hk_issues (room_number, task_id, reporter, category, description, status, at)
          VALUES ('202', (SELECT id FROM hk_tasks WHERE room_number = '202' ORDER BY id DESC LIMIT 1), 'Koffi Mensah', 'Consommables', 'Plus de savon ni de gel douche.', 'ouverte', datetime('now','-30 minutes'))`,
       );
-      db.run(
+      await db.run(
         `INSERT INTO hk_issues (room_number, task_id, reporter, category, description, status, at)
          VALUES ('202', (SELECT id FROM hk_tasks WHERE room_number = '202' ORDER BY id DESC LIMIT 1), 'Koffi Mensah', 'Électricité', 'La lampe du salon ne s’allume plus.', 'ouverte', datetime('now','-25 minutes'))`,
       );
-      db.run(
+      await db.run(
         `INSERT INTO hk_issues (room_number, reporter, category, description, status, at)
          VALUES ('303', 'Fatou Diarra', 'Électricité', 'Ampoule salle de bain HS.', 'ouverte', datetime('now','-12 minutes'))`,
       );
@@ -732,34 +769,34 @@ function seedWorkspace(db) {
   }
 
   try {
-    if (!db.get("SELECT value FROM app_meta WHERE key = 'demo_hk_checkouts'")) {
+    if (!await db.get("SELECT value FROM app_meta WHERE key = 'demo_hk_checkouts'")) {
       const now = new Date();
       const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      db.run(
+      await db.run(
         `UPDATE reservations SET check_out = ?, check_out_time = '08:00'
          WHERE status IN ('en_cours','confirmee')
            AND room_id = (SELECT id FROM rooms WHERE number = '102' LIMIT 1)`,
         [today],
       );
-      db.run(
+      await db.run(
         `UPDATE reservations SET check_out = ?, check_out_time = '09:30'
          WHERE status IN ('en_cours','confirmee')
            AND room_id = (SELECT id FROM rooms WHERE number = '201' LIMIT 1)`,
         [today],
       );
-      db.run("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('demo_hk_checkouts', '1')");
+      await db.run("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('demo_hk_checkouts', '1')");
     }
   } catch {
     /* ignore */
   }
 
-  ensureHotelProducts(db);
+  await ensureHotelProducts(db);
 }
 
-function ensureHotelProducts(db) {
+async function ensureHotelProducts(db) {
   try {
-    db.run("DELETE FROM products WHERE name IN ('Riz parfumé 25kg','Huile 5L','Poulet entier','Filet de capitaine','Cocktail Coco','Pagne souvenir')");
-    const warehouse = db.get('SELECT id FROM warehouses ORDER BY id LIMIT 1');
+    await db.run("DELETE FROM products WHERE name IN ('Riz parfumé 25kg','Huile 5L','Poulet entier','Filet de capitaine','Cocktail Coco','Pagne souvenir')");
+    const warehouse = await db.get('SELECT id FROM warehouses ORDER BY id LIMIT 1');
     const wid = warehouse ? warehouse.id : 1;
     const catalog = [
       ['Préservatifs', 'vente', 'boîte', 4, 10, 400, 1500, 'LOT-PRE'],
@@ -786,17 +823,17 @@ function ensureHotelProducts(db) {
       ['Sacs poubelle', 'interne', 'paquet', 6, 4, 1200, 0, 'LOT-POU'],
       ['Ampoules', 'interne', 'u', 0, 8, 600, 0, 'LOT-AMP'],
     ];
-    catalog.forEach((row) => {
-      const existing = db.get('SELECT id FROM products WHERE name = ?', [row[0]]);
+    for (const row of catalog) {
+      const existing = await db.get('SELECT id FROM products WHERE name = ?', [row[0]]);
       if (existing) {
-        db.run('UPDATE products SET kind=?, unit=? WHERE id=?', [row[1], row[2], existing.id]);
-        return;
+        await db.run('UPDATE products SET kind=?, unit=? WHERE id=?', [row[1], row[2], existing.id]);
+        continue;
       }
-      db.run(
+      await db.run(
         'INSERT INTO products (name, category, unit, stock, min_stock, cost, price, warehouse_id, lot, kind) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [row[0], row[1] === 'vente' ? 'Accueil' : 'Magasin', row[2], row[3], row[4], row[5], row[6], wid, row[7], row[1]],
       );
-    });
+    }
   } catch {
     /* products table may be missing on first migrate */
   }

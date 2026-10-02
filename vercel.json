@@ -10,8 +10,8 @@
   ],
   "functions": {
     "api/[[...path]].js": {
-      "includeFiles": "node_modules/sql.js/dist/**",
-      "maxDuration": 10
+      "includeFiles": "server/**",
+      "maxDuration": 30
     }
   }
 }

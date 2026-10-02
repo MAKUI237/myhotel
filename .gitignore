@@ -31,8 +31,12 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 .vercel
+
+# uploads locaux
+server/data/chat/
 
 # typescript
 *.tsbuildinfo
@@ -42,9 +46,3 @@ example
 # generated native folders
 /ios
 /android
-
-# SQLite
-backend/data/*.sqlite
-backend/data/*.sqlite-*
-server/data/*.sqlite
-server/data/*.sqlite-*

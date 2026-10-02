@@ -50,8 +50,8 @@ function saveChatFile(file) {
   };
 }
 
-function reservationRows(db) {
-  const rows = db.all(
+async function reservationRows(db) {
+  const rows = await db.all(
     `SELECT r.*, g.full_name AS guest_name, g.first_name, g.last_name, g.phone AS guest_phone,
             g.document_id, g.vip AS guest_vip,
             rm.number AS room_number, rm.type AS room_type, rm.photo AS room_photo, rm.status AS room_status
@@ -62,7 +62,7 @@ function reservationRows(db) {
   );
   let occupants = [];
   try {
-    occupants = db.all('SELECT * FROM reservation_occupants');
+    occupants = await db.all('SELECT * FROM reservation_occupants');
   } catch {
     occupants = [];
   }
@@ -72,10 +72,10 @@ function reservationRows(db) {
   }));
 }
 
-function planning(db) {
-  const rooms = db.all('SELECT id, number, type, floor, status FROM rooms ORDER BY number');
+async function planning(db) {
+  const rooms = await db.all('SELECT id, number, type, floor, status FROM rooms ORDER BY number');
   const days = Array.from({ length: 10 }, (_, i) => day(i - 1));
-  const res = reservationRows(db);
+  const res = await reservationRows(db);
   const cells = rooms.map((room) => ({
     ...room,
     days: days.map((d) => {
@@ -111,9 +111,9 @@ function mapHkStatus(status, roomStatus) {
   return null;
 }
 
-function hkAgentList(db) {
+async function hkAgentList(db) {
   const map = new Map();
-  for (const row of db.all("SELECT id, full_name, email FROM users WHERE role = 'housekeeping' AND IFNULL(status, 'actif') != 'banni'")) {
+  for (const row of await db.all("SELECT id, full_name, email FROM users WHERE role = 'housekeeping' AND IFNULL(status, 'actif') != 'banni'")) {
     map.set(String(row.full_name), {
       name: row.full_name,
       email: row.email,
@@ -121,7 +121,7 @@ function hkAgentList(db) {
       source: 'compte',
     });
   }
-  for (const row of db.all("SELECT id, full_name, email FROM staff WHERE department = 'Étages' AND status = 'actif'")) {
+  for (const row of await db.all("SELECT id, full_name, email FROM staff WHERE department = 'Étages' AND status = 'actif'")) {
     if (!map.has(String(row.full_name))) {
       map.set(String(row.full_name), {
         name: row.full_name,
@@ -134,36 +134,36 @@ function hkAgentList(db) {
   return Array.from(map.values()).sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
 }
 
-function isHkAgentName(db, name) {
+async function isHkAgentName(db, name) {
   const key = String(name || '').trim();
   if (!key) return false;
-  return hkAgentList(db).some((agent) => agent.name === key);
+  return (await hkAgentList(db)).some((agent) => agent.name === key);
 }
 
-function replaceHkCrew(db, taskId, leadName, helpers, agents) {
+async function replaceHkCrew(db, taskId, leadName, helpers, agents) {
   const allowed = new Set(agents.map((agent) => agent.name));
-  db.run('DELETE FROM hk_crew WHERE task_id = ?', [taskId]);
+  await db.run('DELETE FROM hk_crew WHERE task_id = ?', [taskId]);
   const names = [leadName, ...(Array.isArray(helpers) ? helpers : [])]
     .map((name) => String(name || '').trim())
     .filter(Boolean)
     .filter((name, index, list) => list.indexOf(name) === index);
-  names.forEach((name) => {
-    if (!allowed.has(name) && name !== leadName) return;
+  for (const name of names) {
+    if (!allowed.has(name) && name !== leadName) continue;
     const agent = agents.find((item) => item.name === name);
-    db.run('INSERT INTO hk_crew (task_id, agent_name, user_id, is_lead) VALUES (?,?,?,?)', [
+    await db.run('INSERT INTO hk_crew (task_id, agent_name, user_id, is_lead) VALUES (?,?,?,?)', [
       taskId,
       name,
       agent?.user_id || null,
       name === leadName ? 1 : 0,
     ]);
-  });
+  }
 }
 
-function hkClaimStats(db, name) {
+async function hkClaimStats(db, name) {
   const who = String(name || '').trim();
   const today = stampNow().slice(0, 10);
   if (!who) return { today: 0, total: 0 };
-  const todayRow = db.get(
+  const todayRow = await db.get(
     `SELECT COUNT(DISTINCT t.id) AS n
      FROM hk_tasks t
      LEFT JOIN hk_crew c ON c.task_id = t.id
@@ -171,7 +171,7 @@ function hkClaimStats(db, name) {
        AND (t.lead_name = ? OR t.attendant = ? OR c.agent_name = ?)`,
     [`${today}%`, who, who, who],
   );
-  const totalRow = db.get(
+  const totalRow = await db.get(
     `SELECT COUNT(DISTINCT t.id) AS n
      FROM hk_tasks t
      LEFT JOIN hk_crew c ON c.task_id = t.id
@@ -187,9 +187,9 @@ function isOpenHk(task) {
   return status !== 'pret' && status !== 'termine' && status !== 'controle';
 }
 
-function computeDashboard(db, actor) {
+async function computeDashboard(db, actor) {
   const today = stampNow().slice(0, 10);
-  const rooms = db.get(
+  const rooms = await db.get(
     `SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN status = 'disponible' THEN 1 ELSE 0 END) AS available,
@@ -198,16 +198,16 @@ function computeDashboard(db, actor) {
       SUM(CASE WHEN status = 'maintenance' THEN 1 ELSE 0 END) AS maintenance
      FROM rooms`,
   );
-  const reservations = reservationRows(db);
+  const reservations = await reservationRows(db);
   let tasks = [];
   let issues = [];
   try {
-    tasks = db.all('SELECT * FROM hk_tasks');
+    tasks = await db.all('SELECT * FROM hk_tasks');
   } catch {
     tasks = [];
   }
   try {
-    issues = db.all('SELECT * FROM hk_issues');
+    issues = await db.all('SELECT * FROM hk_issues');
   } catch {
     issues = [];
   }
@@ -226,14 +226,14 @@ function computeDashboard(db, actor) {
       ready: tasks.filter((task) => String(task.finished_at || '').startsWith(date)).length,
     };
   });
-  const billing = db.get(
+  const billing = await db.get(
     `SELECT
       SUM(CASE WHEN status = 'payee' THEN amount ELSE 0 END) AS paid,
       SUM(CASE WHEN status != 'payee' THEN amount ELSE 0 END) AS pending
      FROM invoices`,
   );
-  const posToday = db.get('SELECT COALESCE(SUM(total), 0) AS n FROM pos_sales WHERE at LIKE ?', [`${today}%`]);
-  const posTodayCount = db.get('SELECT COUNT(*) AS n FROM pos_sales WHERE at LIKE ?', [`${today}%`]);
+  const posToday = await db.get('SELECT COALESCE(SUM(total), 0) AS n FROM pos_sales WHERE at LIKE ?', [`${today}%`]);
+  const posTodayCount = await db.get('SELECT COUNT(*) AS n FROM pos_sales WHERE at LIKE ?', [`${today}%`]);
   const totalRooms = num(rooms && rooms.total);
   return {
     rooms: {
@@ -258,52 +258,51 @@ function computeDashboard(db, actor) {
       maintenance: num(rooms && rooms.maintenance),
       issues_open: issues.filter((item) => item.status !== 'resolue').length,
     },
-    agent: hkClaimStats(db, actor && actor.full_name),
+    agent: await hkClaimStats(db, actor && actor.full_name),
     billing: { paid: num(billing && billing.paid), pending: num(billing && billing.pending) },
     pos_today: num(posToday && posToday.n),
     pos_count_today: num(posTodayCount && posTodayCount.n),
     occupancy_pct: totalRooms ? Math.round((num(rooms && rooms.occupied) / totalRooms) * 100) : 0,
     series,
-    suggestions: suggestionCounts(db, actor),
+    suggestions: await suggestionCounts(db, actor),
     badges: {
-      active: Number(db.get("SELECT COUNT(*) AS n FROM client_badges WHERE IFNULL(status,'actif') = 'actif' AND date(valid_to) >= date('now')").n || 0),
-      expired: Number(db.get("SELECT COUNT(*) AS n FROM client_badges WHERE IFNULL(status,'actif') = 'actif' AND date(valid_to) < date('now')").n || 0),
-      cancelled: Number(db.get("SELECT COUNT(*) AS n FROM client_badges WHERE status = 'annule'").n || 0),
-      total: Number(db.get('SELECT COUNT(*) AS n FROM client_badges').n || 0),
+      active: Number((await db.get("SELECT COUNT(*) AS n FROM client_badges WHERE IFNULL(status,'actif') = 'actif' AND date(valid_to) >= date('now')")).n || 0),
+      expired: Number((await db.get("SELECT COUNT(*) AS n FROM client_badges WHERE IFNULL(status,'actif') = 'actif' AND date(valid_to) < date('now')")).n || 0),
+      cancelled: Number((await db.get("SELECT COUNT(*) AS n FROM client_badges WHERE status = 'annule'")).n || 0),
+      total: Number((await db.get('SELECT COUNT(*) AS n FROM client_badges')).n || 0),
     },
   };
 }
 
-function suggestionCounts(db, actor) {
+async function suggestionCounts(db, actor) {
   if (actor && actor.role === 'owner') {
     return {
-      open: Number(db.get("SELECT COUNT(*) AS n FROM suggestions WHERE status = 'ouverte'").n || 0),
-      total: Number(db.get('SELECT COUNT(*) AS n FROM suggestions').n || 0),
+      open: Number((await db.get("SELECT COUNT(*) AS n FROM suggestions WHERE status = 'ouverte'")).n || 0),
+      total: Number((await db.get('SELECT COUNT(*) AS n FROM suggestions')).n || 0),
     };
   }
   const who = (actor && actor.full_name) || '';
   return {
-    open: Number(db.get("SELECT COUNT(*) AS n FROM suggestions WHERE status = 'ouverte' AND author = ?", [who]).n || 0),
-    total: Number(db.get('SELECT COUNT(*) AS n FROM suggestions WHERE author = ?', [who]).n || 0),
+    open: Number((await db.get("SELECT COUNT(*) AS n FROM suggestions WHERE status = 'ouverte' AND author = ?", [who])).n || 0),
+    total: Number((await db.get('SELECT COUNT(*) AS n FROM suggestions WHERE author = ?', [who])).n || 0),
   };
 }
 
-function staffContacts(db, actorId) {
-  return db
-    .all(
-      `SELECT id, full_name, email, role, photo FROM users
-       WHERE role IN ('receptionist','manager','housekeeping','owner') AND id != ?
-         AND IFNULL(status, 'actif') != 'banni'
-       ORDER BY full_name`,
-      [actorId],
-    )
-    .map((row) => ({
-      id: Number(row.id),
-      full_name: row.full_name,
-      email: row.email,
-      role: row.role,
-      photo: row.photo || null,
-    }));
+async function staffContacts(db, actorId) {
+  const rows = await db.all(
+    `SELECT id, full_name, email, role, photo FROM users
+     WHERE role IN ('receptionist','manager','housekeeping','owner') AND id != ?
+       AND IFNULL(status, 'actif') != 'banni'
+     ORDER BY full_name`,
+    [actorId],
+  );
+  return rows.map((row) => ({
+    id: Number(row.id),
+    full_name: row.full_name,
+    email: row.email,
+    role: row.role,
+    photo: row.photo || null,
+  }));
 }
 
 function threadPair(a, b) {
@@ -312,18 +311,18 @@ function threadPair(a, b) {
   return x < y ? [x, y] : [y, x];
 }
 
-function getOrCreateThread(db, a, b) {
+async function getOrCreateThread(db, a, b) {
   const [userA, userB] = threadPair(a, b);
-  let thread = db.get('SELECT * FROM chat_threads WHERE user_a = ? AND user_b = ?', [userA, userB]);
+  let thread = await db.get('SELECT * FROM chat_threads WHERE user_a = ? AND user_b = ?', [userA, userB]);
   if (!thread) {
-    db.run('INSERT INTO chat_threads (user_a, user_b, created_at) VALUES (?,?,?)', [userA, userB, stampNow()]);
-    thread = db.get('SELECT * FROM chat_threads WHERE id = ?', [db.lastId()]);
+    await db.run('INSERT INTO chat_threads (user_a, user_b, created_at) VALUES (?,?,?)', [userA, userB, stampNow()]);
+    thread = await db.get('SELECT * FROM chat_threads WHERE id = ?', [db.lastId()]);
   }
   return thread;
 }
 
-function publicContact(db, id) {
-  const row = db.get('SELECT id, full_name, email, role, photo FROM users WHERE id = ?', [id]);
+async function publicContact(db, id) {
+  const row = await db.get('SELECT id, full_name, email, role, photo FROM users WHERE id = ?', [id]);
   if (!row) return null;
   return {
     id: Number(row.id),
@@ -364,13 +363,13 @@ function publicEmployee(row) {
   };
 }
 
-function syncHrRecord(db, user) {
+async function syncHrRecord(db, user) {
   const email = String(user.email || '').trim().toLowerCase();
   if (!email) return;
   const hrStatus = String(user.status || 'actif') === 'banni' ? 'arret' : 'actif';
-  const existing = db.get('SELECT id FROM staff WHERE lower(email) = ?', [email]);
+  const existing = await db.get('SELECT id FROM staff WHERE lower(email) = ?', [email]);
   if (existing) {
-    db.run('UPDATE staff SET full_name=?, role=?, department=?, phone=?, status=? WHERE id=?', [
+    await db.run('UPDATE staff SET full_name=?, role=?, department=?, phone=?, status=? WHERE id=?', [
       user.full_name,
       hrRoleLabel(user.role),
       departmentForRole(user.role),
@@ -380,7 +379,7 @@ function syncHrRecord(db, user) {
     ]);
     return;
   }
-  db.run(
+  await db.run(
     'INSERT INTO staff (full_name, role, department, phone, email, status, hired_at, photo) VALUES (?,?,?,?,?,?,?,?)',
     [
       user.full_name,
@@ -414,42 +413,43 @@ function parseEmployeeBody(body, { requirePassword }) {
   return { fullName, email, phone: phone || null, role, password };
 }
 
-function messagesPayload(db, actor) {
+async function messagesPayload(db, actor) {
   const me = Number(actor.id);
   let threads = [];
   try {
-    threads = db.all('SELECT * FROM chat_threads WHERE user_a = ? OR user_b = ?', [me, me]);
+    threads = await db.all('SELECT * FROM chat_threads WHERE user_a = ? OR user_b = ?', [me, me]);
   } catch {
     threads = [];
   }
-  const list = threads.map((thread) => {
+  const list = [];
+  for (const thread of threads) {
     const otherId = Number(thread.user_a) === me ? thread.user_b : thread.user_a;
-    const last = db.get('SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1', [thread.id]);
-    return {
+    const last = await db.get('SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1', [thread.id]);
+    list.push({
       id: Number(thread.id),
-      other: publicContact(db, otherId),
+      other: await publicContact(db, otherId),
       last_body: last ? chatPreview(last) : '',
       last_at: last ? last.created_at : thread.created_at,
-    };
-  });
+    });
+  }
   list.sort((a, b) => String(b.last_at || '').localeCompare(String(a.last_at || '')));
   const started = list.filter((item) => item.last_body);
   let messages = [];
   if (threads.length) {
     const ids = threads.map((row) => Number(row.id));
-    messages = db.all(
+    messages = await db.all(
       `SELECT * FROM chat_messages WHERE thread_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`,
       ids,
     );
   }
-  return { contacts: staffContacts(db, me), threads: started, messages };
+  return { contacts: await staffContacts(db, me), threads: started, messages };
 }
 
-function enrichHkTask(db, task) {
+async function enrichHkTask(db, task) {
   let crew = [];
   let issues = [];
   try {
-    crew = db.all(
+    crew = await db.all(
       'SELECT agent_name, user_id, is_lead FROM hk_crew WHERE task_id = ? ORDER BY is_lead DESC, agent_name',
       [task.id],
     );
@@ -457,7 +457,7 @@ function enrichHkTask(db, task) {
     crew = [];
   }
   try {
-    issues = db.all(
+    issues = await db.all(
       'SELECT * FROM hk_issues WHERE task_id = ? OR (task_id IS NULL AND room_number = ?) ORDER BY at DESC',
       [task.id, task.room_number],
     );
@@ -467,7 +467,7 @@ function enrichHkTask(db, task) {
   if (!crew.length && task.attendant) {
     crew = [{ agent_name: task.attendant, user_id: null, is_lead: 1 }];
   }
-  const room = db.get('SELECT status FROM rooms WHERE number = ?', [task.room_number]);
+  const room = await db.get('SELECT status FROM rooms WHERE number = ?', [task.room_number]);
   return {
     ...task,
     status: mapHkStatus(task.status, room && room.status),
@@ -485,15 +485,15 @@ function localNowStamp() {
   return `${date} ${time}`;
 }
 
-function queueDepartureCleaning(db, roomNumber, guestName, endStamp) {
-  const room = db.get('SELECT * FROM rooms WHERE number = ?', [roomNumber]);
+async function queueDepartureCleaning(db, roomNumber, guestName, endStamp) {
+  const room = await db.get('SELECT * FROM rooms WHERE number = ?', [roomNumber]);
   if (!room || room.status === 'maintenance') return;
-  const open = db.get(
+  const open = await db.get(
     "SELECT id FROM hk_tasks WHERE room_number = ? AND status NOT IN ('pret','termine','controle') ORDER BY id DESC LIMIT 1",
     [roomNumber],
   );
   if (!open) {
-    db.run(
+    await db.run(
       `INSERT INTO hk_tasks (room_number, attendant, priority, status, eta_minutes, due_at, notes, created_at)
        VALUES (?,?,?,?,?,?,?,?)`,
       [
@@ -508,19 +508,19 @@ function queueDepartureCleaning(db, roomNumber, guestName, endStamp) {
       ],
     );
   }
-  db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ? AND status != 'maintenance'", [roomNumber]);
-  db.run(
+  await db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ? AND status != 'maintenance'", [roomNumber]);
+  await db.run(
     `INSERT INTO notifications (category, title, body, href, is_read, created_at)
      VALUES ('ÉTAGES', 'Chambre à nettoyer', ?, '/housekeeping', 0, ?)`,
     [`Chambre ${roomNumber} libérée (${endStamp}) — passage entretien.`, stampNow()],
   );
 }
 
-function releaseExpiredStays(db) {
+async function releaseExpiredStays(db) {
   const now = localNowStamp();
   let rows = [];
   try {
-    rows = db.all(
+    rows = await db.all(
       `SELECT r.id, r.check_out, r.check_out_time, rm.number AS room_number, g.full_name AS guest_name
        FROM reservations r
        JOIN rooms rm ON rm.id = r.room_id
@@ -533,9 +533,9 @@ function releaseExpiredStays(db) {
   for (const row of rows) {
     const end = at(row.check_out, row.check_out_time || '12:00');
     if (end > now) continue;
-    db.run("UPDATE reservations SET status = 'terminee' WHERE id = ?", [row.id]);
+    await db.run("UPDATE reservations SET status = 'terminee' WHERE id = ?", [row.id]);
     try {
-      db.run(
+      await db.run(
         "UPDATE client_badges SET status = 'expire' WHERE IFNULL(status,'actif') = 'actif' AND (reservation_id = ? OR (room_number = ? AND guest_name = ?))",
         [row.id, row.room_number, row.guest_name],
       );
@@ -543,16 +543,16 @@ function releaseExpiredStays(db) {
       /* badges optionnels */
     }
     try {
-      queueDepartureCleaning(db, row.room_number, row.guest_name, end);
+      await queueDepartureCleaning(db, row.room_number, row.guest_name, end);
     } catch {
       /* hk_tasks peut manquer une colonne */
     }
   }
 }
 
-function markReadyRoomsDisponible(db) {
+async function markReadyRoomsDisponible(db) {
   try {
-    db.run(
+    await db.run(
       `UPDATE rooms SET status = 'disponible'
        WHERE status = 'nettoyage'
          AND number IN (
@@ -570,13 +570,13 @@ function markReadyRoomsDisponible(db) {
   }
 }
 
-function enrichRooms(db) {
+async function enrichRooms(db) {
   const today = day(0);
   const now = at(today, new Date().toTimeString().slice(0, 5));
-  markReadyRoomsDisponible(db);
-  const stays = reservationRows(db).filter((row) => row.status !== 'annulee' && row.status !== 'terminee');
-  const tasks = db.all('SELECT * FROM hk_tasks ORDER BY id DESC');
-  const rooms = db.all(
+  await markReadyRoomsDisponible(db);
+  const stays = (await reservationRows(db)).filter((row) => row.status !== 'annulee' && row.status !== 'terminee');
+  const tasks = await db.all('SELECT * FROM hk_tasks ORDER BY id DESC');
+  const rooms = await db.all(
     'SELECT id, number, type, floor, status, price_night, capacity, photo, video, description FROM rooms ORDER BY number',
   );
   return rooms.map((room) => {
@@ -638,29 +638,29 @@ function enrichRooms(db) {
   });
 }
 
-function computeKpis(db) {
-  const roomCount = num(db.get('SELECT COUNT(*) AS n FROM rooms').n) || 12;
-  const live = reservationRows(db).filter((r) => r.status === 'en_cours' || r.status === 'confirmee');
-  const occupied = reservationRows(db).filter((r) => r.status === 'en_cours').length;
+async function computeKpis(db) {
+  const roomCount = num((await db.get('SELECT COUNT(*) AS n FROM rooms')).n) || 12;
+  const live = (await reservationRows(db)).filter((r) => r.status === 'en_cours' || r.status === 'confirmee');
+  const occupied = (await reservationRows(db)).filter((r) => r.status === 'en_cours').length;
   const occupancy = roomCount ? occupied / roomCount : 0;
-  const folioRoom = num(db.get("SELECT SUM(amount) AS n FROM folio_charges WHERE source = 'hebergement'").n);
-  const stayRevenue = num(db.get("SELECT SUM(total) AS n FROM reservations WHERE status != 'annulee'").n);
+  const folioRoom = num((await db.get("SELECT SUM(amount) AS n FROM folio_charges WHERE source = 'hebergement'")).n);
+  const stayRevenue = num((await db.get("SELECT SUM(total) AS n FROM reservations WHERE status != 'annulee'")).n);
   const roomRevenue = folioRoom || stayRevenue;
-  const posRevenue = num(db.get("SELECT SUM(total) AS n FROM pos_sales").n);
-  const venueRevenue = num(db.get('SELECT SUM(paid) AS n FROM venue_bookings').n);
-  const allRevenue = roomRevenue + posRevenue + venueRevenue + num(db.get("SELECT SUM(amount) AS n FROM folio_charges WHERE source != 'hebergement'").n);
+  const posRevenue = num((await db.get("SELECT SUM(total) AS n FROM pos_sales")).n);
+  const venueRevenue = num((await db.get('SELECT SUM(paid) AS n FROM venue_bookings')).n);
+  const allRevenue = roomRevenue + posRevenue + venueRevenue + num((await db.get("SELECT SUM(amount) AS n FROM folio_charges WHERE source != 'hebergement'")).n);
   const sold = Math.max(occupied, 1);
   const adr = roomRevenue / sold;
   const revpar = occupancy * adr;
   const trevpar = allRevenue / roomCount;
-  const seats = num(db.get('SELECT SUM(seats) AS n FROM outlets').n) || 64;
+  const seats = num((await db.get('SELECT SUM(seats) AS n FROM outlets')).n) || 64;
   const revpash = posRevenue / Math.max(seats * 8, 1);
-  const guestsIn = Math.max(reservationRows(db).filter((r) => r.status === 'en_cours').length, 1);
-  const dined = db.all("SELECT DISTINCT guest_name FROM pos_sales WHERE guest_name IS NOT NULL AND outlet LIKE 'Restaurant%'").length;
+  const guestsIn = Math.max((await reservationRows(db)).filter((r) => r.status === 'en_cours').length, 1);
+  const dined = (await db.all("SELECT DISTINCT guest_name FROM pos_sales WHERE guest_name IS NOT NULL AND outlet LIKE 'Restaurant%'")).length;
   const capture = dined / guestsIn;
-  const costs = num(db.get('SELECT SUM(amount) AS n FROM cost_allocations').n);
+  const costs = num((await db.get('SELECT SUM(amount) AS n FROM cost_allocations')).n);
   const goppar = (allRevenue - costs) / roomCount;
-  const revpac = allRevenue / Math.max(db.all('SELECT id FROM guests').length, 1);
+  const revpac = allRevenue / Math.max((await db.all('SELECT id FROM guests')).length, 1);
   return {
     occupancy,
     adr,
@@ -683,16 +683,16 @@ function computeKpis(db) {
 async function handlePms(req, res, ctx) {
   const { db, pathName, method, readBody, ok, fail, requireUser } = ctx;
   if (!pathName.startsWith('/pms')) return false;
-  const actor = requireUser(db, req, res);
+  const actor = await requireUser(db, req, res);
   if (!actor) return true;
   try {
-    releaseExpiredStays(db);
+    await releaseExpiredStays(db);
   } catch {
     /* ignore */
   }
 
   if (method === 'GET' && pathName === '/pms/company') {
-    const row = db.get('SELECT * FROM company_profile WHERE id = 1');
+    const row = await db.get('SELECT * FROM company_profile WHERE id = 1');
     ok(res, row || {});
     return true;
   }
@@ -703,7 +703,7 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const body = await readBody(req);
-    const existing = db.get('SELECT id FROM company_profile WHERE id = 1');
+    const existing = await db.get('SELECT id FROM company_profile WHERE id = 1');
     const fields = [
       String(body.name || 'MyHotel').trim() || 'MyHotel',
       String(body.legal_name || '').trim(),
@@ -720,45 +720,43 @@ async function handlePms(req, res, ctx) {
       body.stamp ? String(body.stamp) : null,
     ];
     if (existing) {
-      db.run(
+      await db.run(
         `UPDATE company_profile SET name=?, legal_name=?, address=?, city=?, country=?, phone=?, email=?, website=?, nif=?, rccm=?, slogan=?, logo=?, stamp=? WHERE id=1`,
         fields,
       );
     } else {
-      db.run(
+      await db.run(
         `INSERT INTO company_profile (id, name, legal_name, address, city, country, phone, email, website, nif, rccm, slogan, logo, stamp)
          VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         fields,
       );
     }
-    ok(res, db.get('SELECT * FROM company_profile WHERE id = 1'), 'Identité de l’entreprise enregistrée.');
+    ok(res, await db.get('SELECT * FROM company_profile WHERE id = 1'), 'Identité de l’entreprise enregistrée.');
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/front-office') {
     ok(res, {
-      reservations: reservationRows(db),
-      planning: planning(db),
-      lost_items: db.all('SELECT * FROM lost_items ORDER BY stored_at DESC'),
-      visits: db.all('SELECT * FROM visits ORDER BY arrived_at DESC'),
-      vip_tasks: db.all('SELECT * FROM vip_tasks ORDER BY scheduled_at'),
-      transfers: db.all('SELECT * FROM room_transfers ORDER BY at DESC'),
-      charges: db.all('SELECT * FROM folio_charges ORDER BY at DESC'),
-      rooms: enrichRooms(db),
-      guests: db.all('SELECT * FROM guests ORDER BY full_name'),
+      reservations: await reservationRows(db),
+      planning: await planning(db),
+      lost_items: await db.all('SELECT * FROM lost_items ORDER BY stored_at DESC'),
+      visits: await db.all('SELECT * FROM visits ORDER BY arrived_at DESC'),
+      vip_tasks: await db.all('SELECT * FROM vip_tasks ORDER BY scheduled_at'),
+      transfers: await db.all('SELECT * FROM room_transfers ORDER BY at DESC'),
+      charges: await db.all('SELECT * FROM folio_charges ORDER BY at DESC'),
+      rooms: await enrichRooms(db),
+      guests: await db.all('SELECT * FROM guests ORDER BY full_name'),
     });
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/housekeeping') {
-    const agents = hkAgentList(db);
+    const agents = await hkAgentList(db);
     let tasks = [];
     try {
-      const raw = db
-        .all(
-          "SELECT * FROM hk_tasks ORDER BY id DESC",
-        )
-        .map((task) => enrichHkTask(db, task));
+      const raw = await Promise.all(
+        (await db.all('SELECT * FROM hk_tasks ORDER BY id DESC')).map((task) => enrichHkTask(db, task)),
+      );
       const openSeen = new Set();
       tasks = raw.filter((task) => {
         if (task.status === 'pret' || task.status === 'termine' || task.status === 'controle') return true;
@@ -772,7 +770,7 @@ async function handlePms(req, res, ctx) {
         if (pa !== pb) return pa - pb;
         return String(a.room_number).localeCompare(String(b.room_number), 'fr');
       });
-      markReadyRoomsDisponible(db);
+      await markReadyRoomsDisponible(db);
       if (actor.role === 'housekeeping') {
         tasks = tasks.filter(
           (task) => !['pret', 'termine', 'controle', 'maintenance'].includes(task.status),
@@ -783,7 +781,7 @@ async function handlePms(req, res, ctx) {
     }
     let issues = [];
     try {
-      issues = db.all('SELECT * FROM hk_issues ORDER BY at DESC');
+      issues = await db.all('SELECT * FROM hk_issues ORDER BY at DESC');
     } catch {
       issues = [];
     }
@@ -793,13 +791,13 @@ async function handlePms(req, res, ctx) {
       agents,
       rooms:
         actor.role === 'housekeeping'
-          ? db.all(
+          ? await db.all(
               "SELECT id, number, type, floor, status, photo FROM rooms WHERE status != 'maintenance' ORDER BY floor, number",
             )
-          : db.all('SELECT id, number, type, floor, status, photo FROM rooms ORDER BY floor, number'),
-      agent_stats: hkClaimStats(db, actor.full_name),
-      inspections: db.all('SELECT * FROM inspections ORDER BY at DESC'),
-      anomalies: db.all('SELECT * FROM anomalies ORDER BY at DESC'),
+          : await db.all('SELECT id, number, type, floor, status, photo FROM rooms ORDER BY floor, number'),
+      agent_stats: await hkClaimStats(db, actor.full_name),
+      inspections: await db.all('SELECT * FROM inspections ORDER BY at DESC'),
+      anomalies: await db.all('SELECT * FROM anomalies ORDER BY at DESC'),
     });
     return true;
   }
@@ -807,7 +805,7 @@ async function handlePms(req, res, ctx) {
   if (method === 'GET' && pathName === '/pms/issues') {
     let issues = [];
     try {
-      issues = db.all('SELECT * FROM hk_issues ORDER BY at DESC');
+      issues = await db.all('SELECT * FROM hk_issues ORDER BY at DESC');
     } catch {
       issues = [];
     }
@@ -820,36 +818,38 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'GET' && pathName === '/pms/maintenance') {
     ok(res, {
-      orders: db.all('SELECT * FROM work_orders ORDER BY opened_at DESC'),
-      history: db.all("SELECT nature, COUNT(*) AS n FROM work_orders GROUP BY nature"),
+      orders: await db.all('SELECT * FROM work_orders ORDER BY opened_at DESC'),
+      history: await db.all("SELECT nature, COUNT(*) AS n FROM work_orders GROUP BY nature"),
     });
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/purchasing') {
-    const products = db.all(
+    const products = await db.all(
       `SELECT p.*, w.name AS warehouse FROM products p JOIN warehouses w ON w.id = p.warehouse_id ORDER BY p.name`,
     );
     ok(res, {
       products,
       to_order: products.filter((p) => Number(p.stock) <= Number(p.min_stock)),
-      suppliers: db.all('SELECT * FROM suppliers'),
-      orders: db.all(
+      suppliers: await db.all('SELECT * FROM suppliers'),
+      orders: await db.all(
         `SELECT o.*, s.name AS supplier FROM purchase_orders o JOIN suppliers s ON s.id = o.supplier_id ORDER BY o.ordered_at DESC`,
       ),
-      items: db.all('SELECT * FROM purchase_items'),
+      items: await db.all('SELECT * FROM purchase_items'),
     });
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/pos') {
-    const sales = db.all('SELECT * FROM pos_sales ORDER BY id DESC').map((row) => saleDetail(db, row));
+    const sales = await Promise.all(
+      (await db.all('SELECT * FROM pos_sales ORDER BY id DESC')).map((row) => saleDetail(db, row)),
+    );
     ok(res, {
-      products: db.all(
+      products: await db.all(
         "SELECT * FROM products WHERE kind = 'vente' OR kind IS NULL OR kind = '' ORDER BY name",
       ),
       sales,
-      items: db.all('SELECT * FROM pos_sale_items'),
+      items: await db.all('SELECT * FROM pos_sale_items'),
     });
     return true;
   }
@@ -859,14 +859,14 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Seul le gérant peut consulter le stock.', 403);
       return true;
     }
-    const products = db.all(
+    const products = await db.all(
       `SELECT p.*, w.name AS warehouse FROM products p LEFT JOIN warehouses w ON w.id = p.warehouse_id ORDER BY p.name`,
     );
     ok(res, {
       products,
-      warehouses: db.all('SELECT * FROM warehouses ORDER BY name'),
-      moves: db.all('SELECT * FROM stock_moves ORDER BY id DESC LIMIT 80'),
-      staff: db.all(
+      warehouses: await db.all('SELECT * FROM warehouses ORDER BY name'),
+      moves: await db.all('SELECT * FROM stock_moves ORDER BY id DESC LIMIT 80'),
+      staff: await db.all(
         "SELECT full_name AS name, role FROM users WHERE role IN ('housekeeping','receptionist','manager','owner') ORDER BY full_name",
       ),
       rupture: products.filter((p) => Number(p.stock) <= 0).length,
@@ -877,35 +877,35 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'GET' && pathName === '/pms/venues') {
     ok(res, {
-      venues: db.all('SELECT * FROM venues'),
-      bookings: db.all(
+      venues: await db.all('SELECT * FROM venues'),
+      bookings: await db.all(
         `SELECT b.*, v.name AS venue_name, v.area_m2 FROM venue_bookings b JOIN venues v ON v.id = b.venue_id ORDER BY b.start_at`,
       ),
-      payments: db.all('SELECT * FROM venue_payments ORDER BY at DESC'),
+      payments: await db.all('SELECT * FROM venue_payments ORDER BY at DESC'),
     });
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/finance') {
     ok(res, {
-      registers: db.all('SELECT * FROM cash_registers'),
-      sessions: db.all('SELECT * FROM cash_sessions ORDER BY opened_at DESC'),
-      lines: db.all('SELECT * FROM cash_lines ORDER BY at DESC'),
-      deposits: db.all('SELECT * FROM deposits ORDER BY at DESC'),
-      allocations: db.all('SELECT * FROM cost_allocations ORDER BY period DESC'),
-      invoices: db.all('SELECT * FROM invoices ORDER BY issued_at DESC'),
-      charges: db.all('SELECT * FROM folio_charges ORDER BY at DESC'),
+      registers: await db.all('SELECT * FROM cash_registers'),
+      sessions: await db.all('SELECT * FROM cash_sessions ORDER BY opened_at DESC'),
+      lines: await db.all('SELECT * FROM cash_lines ORDER BY at DESC'),
+      deposits: await db.all('SELECT * FROM deposits ORDER BY at DESC'),
+      allocations: await db.all('SELECT * FROM cost_allocations ORDER BY period DESC'),
+      invoices: await db.all('SELECT * FROM invoices ORDER BY issued_at DESC'),
+      charges: await db.all('SELECT * FROM folio_charges ORDER BY at DESC'),
     });
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/kpis') {
-    ok(res, computeKpis(db));
+    ok(res, await computeKpis(db));
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/dashboard') {
-    ok(res, computeDashboard(db, actor));
+    ok(res, await computeDashboard(db, actor));
     return true;
   }
 
@@ -915,46 +915,48 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const today = day(0);
-    const reservations = reservationRows(db);
-    const products = db.all(
+    const reservations = await reservationRows(db);
+    const products = await db.all(
       `SELECT p.*, w.name AS warehouse FROM products p LEFT JOIN warehouses w ON w.id = p.warehouse_id ORDER BY p.name`,
     );
-    const sales = db.all('SELECT * FROM pos_sales ORDER BY id DESC').map((row) => saleDetail(db, row));
+    const sales = await Promise.all(
+      (await db.all('SELECT * FROM pos_sales ORDER BY id DESC')).map((row) => saleDetail(db, row)),
+    );
     let issues = [];
     try {
-      issues = db.all('SELECT * FROM hk_issues ORDER BY at DESC');
+      issues = await db.all('SELECT * FROM hk_issues ORDER BY at DESC');
     } catch {
       issues = [];
     }
-    const salesByOutlet = db.all(
+    const salesByOutlet = await db.all(
       'SELECT COALESCE(outlet, seller, \'Réception\') AS outlet, COUNT(*) AS n, SUM(total) AS amount FROM pos_sales GROUP BY outlet',
     );
-    const topProducts = db.all(
+    const topProducts = await db.all(
       'SELECT product_name, SUM(qty) AS qty, SUM(qty*price) AS amount FROM pos_sale_items GROUP BY product_name ORDER BY amount DESC',
     );
     ok(res, {
-      company: db.get('SELECT * FROM company_profile WHERE id = 1'),
-      kpis: computeKpis(db),
+      company: await db.get('SELECT * FROM company_profile WHERE id = 1'),
+      kpis: await computeKpis(db),
       today: {
         date: today,
         arrivals: reservations.filter((row) => String(row.check_in).slice(0, 10) === today && row.status !== 'annulee').length,
         departures: reservations.filter((row) => String(row.check_out).slice(0, 10) === today && row.status !== 'annulee').length,
         in_house: reservations.filter((row) => row.status === 'en_cours').length,
-        sales_count: Number(db.get('SELECT COUNT(*) AS n FROM pos_sales WHERE date(at) = date(?)', [today]).n || 0),
-        sales_amount: Number(db.get('SELECT COALESCE(SUM(total),0) AS n FROM pos_sales WHERE date(at) = date(?)', [today]).n || 0),
-        cash_in: Number(db.get("SELECT COALESCE(SUM(amount),0) AS n FROM cash_moves WHERE kind = 'entree' AND date(at) = date(?)", [today]).n || 0),
-        cash_out: Number(db.get("SELECT COALESCE(SUM(amount),0) AS n FROM cash_moves WHERE kind = 'sortie' AND date(at) = date(?)", [today]).n || 0),
+        sales_count: Number((await db.get('SELECT COUNT(*) AS n FROM pos_sales WHERE date(at) = date(?)', [today])).n || 0),
+        sales_amount: Number((await db.get('SELECT COALESCE(SUM(total),0) AS n FROM pos_sales WHERE date(at) = date(?)', [today])).n || 0),
+        cash_in: Number((await db.get("SELECT COALESCE(SUM(amount),0) AS n FROM cash_moves WHERE kind = 'entree' AND date(at) = date(?)", [today])).n || 0),
+        cash_out: Number((await db.get("SELECT COALESCE(SUM(amount),0) AS n FROM cash_moves WHERE kind = 'sortie' AND date(at) = date(?)", [today])).n || 0),
       },
-      rooms: db.all('SELECT id, number, type, status, price_night FROM rooms ORDER BY number'),
+      rooms: await db.all('SELECT id, number, type, status, price_night FROM rooms ORDER BY number'),
       reservations,
       sales,
       salesByOutlet,
       topProducts,
       products,
-      moves: db.all('SELECT * FROM stock_moves ORDER BY at DESC'),
+      moves: await db.all('SELECT * FROM stock_moves ORDER BY at DESC'),
       issues,
-      cash: db.all('SELECT * FROM cash_moves ORDER BY at DESC'),
-      guests: db.all('SELECT * FROM guests ORDER BY full_name'),
+      cash: await db.all('SELECT * FROM cash_moves ORDER BY at DESC'),
+      guests: await db.all('SELECT * FROM guests ORDER BY full_name'),
     });
     return true;
   }
@@ -966,21 +968,21 @@ async function handlePms(req, res, ctx) {
     }
     let tasks = [];
     try {
-      tasks = db.all("SELECT * FROM hk_tasks WHERE status NOT IN ('pret','termine','controle') ORDER BY room_number");
+      tasks = await db.all("SELECT * FROM hk_tasks WHERE status NOT IN ('pret','termine','controle') ORDER BY room_number");
     } catch {
       tasks = [];
     }
     let jobs = [];
     try {
-      jobs = db.all('SELECT * FROM work_tasks ORDER BY day DESC, id DESC');
+      jobs = await db.all('SELECT * FROM work_tasks ORDER BY day DESC, id DESC');
     } catch {
       jobs = [];
     }
     ok(res, {
-      staff: db.all(
+      staff: await db.all(
         "SELECT id, full_name, role, email FROM users WHERE role IN ('receptionist','housekeeping','manager','owner') AND IFNULL(status, 'actif') != 'banni' ORDER BY full_name",
       ),
-      shifts: db.all('SELECT * FROM staff_shifts ORDER BY day, start_hour'),
+      shifts: await db.all('SELECT * FROM staff_shifts ORDER BY day, start_hour'),
       tasks,
       jobs,
     });
@@ -988,8 +990,8 @@ async function handlePms(req, res, ctx) {
   }
 
   if (method === 'GET' && pathName === '/pms/payroll') {
-    const staff = db.all('SELECT * FROM staff ORDER BY department, full_name');
-    const payslips = db.all(
+    const staff = await db.all('SELECT * FROM staff ORDER BY department, full_name');
+    const payslips = await db.all(
       `SELECT p.*, st.full_name, st.role, st.department, st.iban, st.union_name, st.mutual_name, st.id_number
        FROM payslips p JOIN staff st ON st.id = p.staff_id ORDER BY p.net DESC`,
     );
@@ -1003,11 +1005,11 @@ async function handlePms(req, res, ctx) {
     }
     ok(res, {
       staff,
-      timesheets: db.all('SELECT * FROM timesheets ORDER BY day DESC'),
-      sanctions: db.all('SELECT s.*, st.full_name FROM sanctions s JOIN staff st ON st.id = s.staff_id'),
-      advances: db.all('SELECT a.*, st.full_name FROM advances a JOIN staff st ON st.id = a.staff_id'),
+      timesheets: await db.all('SELECT * FROM timesheets ORDER BY day DESC'),
+      sanctions: await db.all('SELECT s.*, st.full_name FROM sanctions s JOIN staff st ON st.id = s.staff_id'),
+      advances: await db.all('SELECT a.*, st.full_name FROM advances a JOIN staff st ON st.id = a.staff_id'),
       payslips,
-      indemnities: db.all(
+      indemnities: await db.all(
         `SELECT i.*, st.full_name FROM indemnity_lines i JOIN staff st ON st.id = i.staff_id ORDER BY i.at DESC`,
       ),
       by_department: Object.values(byDept),
@@ -1019,8 +1021,8 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'GET' && pathName === '/pms/assets') {
     ok(res, {
-      assets: db.all('SELECT * FROM assets ORDER BY value DESC'),
-      events: db.all(
+      assets: await db.all('SELECT * FROM assets ORDER BY value DESC'),
+      events: await db.all(
         `SELECT e.*, a.name AS asset_name FROM asset_events e JOIN assets a ON a.id = e.asset_id ORDER BY e.at DESC`,
       ),
     });
@@ -1049,7 +1051,7 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Nom, prénom, téléphone et numéro de CNI sont obligatoires.');
       return true;
     }
-    const room = db.get('SELECT * FROM rooms WHERE number = ?', [roomNumber]);
+    const room = await db.get('SELECT * FROM rooms WHERE number = ?', [roomNumber]);
     if (!room) {
       fail(res, 'Chambre introuvable.');
       return true;
@@ -1060,12 +1062,12 @@ async function handlePms(req, res, ctx) {
       fail(res, 'La date et l’heure de départ doivent être après l’arrivée.');
       return true;
     }
-    const clash = db.all(
+    const clash = (await db.all(
       `SELECT r.*, g.full_name AS guest_name FROM reservations r
        JOIN guests g ON g.id = r.guest_id
        WHERE r.room_id = ? AND r.status NOT IN ('annulee', 'terminee')`,
       [room.id],
-    ).find((row) => {
+    )).find((row) => {
       const busyStart = at(row.check_in, row.check_in_time || '14:00');
       const busyEnd = at(row.check_out, row.check_out_time || '12:00');
       return start < busyEnd && end > busyStart;
@@ -1090,25 +1092,25 @@ async function handlePms(req, res, ctx) {
       fail(res, `Cette chambre accepte au plus ${capacity} personne(s).`);
       return true;
     }
-    let guest = db.get('SELECT * FROM guests WHERE document_id = ? AND document_id IS NOT NULL LIMIT 1', [documentId]);
+    let guest = await db.get('SELECT * FROM guests WHERE document_id = ? AND document_id IS NOT NULL LIMIT 1', [documentId]);
     if (!guest) {
-      guest = db.get('SELECT * FROM guests WHERE full_name = ? LIMIT 1', [guestName]);
+      guest = await db.get('SELECT * FROM guests WHERE full_name = ? LIMIT 1', [guestName]);
     }
     if (!guest) {
-      db.run(
+      await db.run(
         'INSERT INTO guests (full_name, first_name, last_name, email, phone, nationality, notes, vip, loyalty_nights, document_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [guestName, firstName, lastName, null, phone, body.nationality || 'Cameroun', null, 0, 0, documentId],
       );
-      guest = db.get('SELECT * FROM guests WHERE id = ?', [db.lastId()]);
+      guest = await db.get('SELECT * FROM guests WHERE id = ?', [db.lastId()]);
     } else {
-      db.run(
+      await db.run(
         'UPDATE guests SET full_name=?, first_name=?, last_name=?, phone=?, document_id=? WHERE id=?',
         [guestName, firstName, lastName, phone, documentId, guest.id],
       );
-      guest = db.get('SELECT * FROM guests WHERE id = ?', [guest.id]);
+      guest = await db.get('SELECT * FROM guests WHERE id = ?', [guest.id]);
     }
     const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
-    db.run(
+    await db.run(
       `INSERT INTO reservations (guest_id, room_id, check_in, check_out, check_in_time, check_out_time, status, total, source, confirmed, notes, deposit_amount, adults, children)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
@@ -1128,19 +1130,19 @@ async function handlePms(req, res, ctx) {
         Number(body.children || 0),
       ],
     );
-    const reservationId = db.lastId();
+    const reservationId = await db.lastId();
     const occupants = [
       { first_name: firstName, last_name: lastName, phone, document_id: documentId, is_primary: 1 },
       ...extra.map((row) => ({ ...row, is_primary: 0 })),
     ];
     for (const person of occupants) {
-      db.run(
+      await db.run(
         'INSERT INTO reservation_occupants (reservation_id, is_primary, first_name, last_name, phone, document_id) VALUES (?,?,?,?,?,?)',
         [reservationId, person.is_primary, person.first_name, person.last_name, person.phone || null, person.document_id || null],
       );
     }
     if (room.status === 'disponible' && checkIn <= day(0)) {
-      db.run('UPDATE rooms SET status = ? WHERE id = ?', [source === 'walk_in' ? 'occupee' : 'reservee', room.id]);
+      await db.run('UPDATE rooms SET status = ? WHERE id = ?', [source === 'walk_in' ? 'occupee' : 'reservee', room.id]);
     }
     ok(
       res,
@@ -1153,19 +1155,19 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'POST' && pathName.match(/^\/pms\/reservations\/(\d+)\/confirm$/)) {
     const id = Number(pathName.split('/')[3]);
-    db.run('UPDATE reservations SET confirmed = 1, status = ? WHERE id = ?', ['confirmee', id]);
+    await db.run('UPDATE reservations SET confirmed = 1, status = ? WHERE id = ?', ['confirmee', id]);
     ok(res, { id }, 'Réservation confirmée.');
     return true;
   }
 
   if (method === 'POST' && pathName.match(/^\/pms\/reservations\/(\d+)\/cancel$/)) {
     const id = Number(pathName.split('/')[3]);
-    const resv = db.get(
+    const resv = await db.get(
       `SELECT r.*, rm.number AS room_number FROM reservations r JOIN rooms rm ON rm.id = r.room_id WHERE r.id = ?`,
       [id],
     );
-    db.run("UPDATE reservations SET status = 'annulee', confirmed = 0 WHERE id = ?", [id]);
-    if (resv) db.run("UPDATE rooms SET status = 'disponible' WHERE id = ?", [resv.room_id]);
+    await db.run("UPDATE reservations SET status = 'annulee', confirmed = 0 WHERE id = ?", [id]);
+    if (resv) await db.run("UPDATE rooms SET status = 'disponible' WHERE id = ?", [resv.room_id]);
     ok(res, { id }, 'Réservation annulée.');
     return true;
   }
@@ -1173,7 +1175,7 @@ async function handlePms(req, res, ctx) {
   if (method === 'POST' && pathName.match(/^\/pms\/reservations\/(\d+)\/update$/)) {
     const id = Number(pathName.split('/')[3]);
     const body = await readBody(req);
-    const resv = db.get('SELECT * FROM reservations WHERE id = ?', [id]);
+    const resv = await db.get('SELECT * FROM reservations WHERE id = ?', [id]);
     if (!resv) {
       fail(res, 'Réservation introuvable.');
       return true;
@@ -1187,19 +1189,19 @@ async function handlePms(req, res, ctx) {
     const checkOut = String(body.check_out || resv.check_out).slice(0, 10);
     const checkInTime = String(body.check_in_time || resv.check_in_time || '14:00').slice(0, 5);
     const checkOutTime = String(body.check_out_time || resv.check_out_time || '12:00').slice(0, 5);
-    const room = db.get('SELECT * FROM rooms WHERE number = ?', [roomNumber]);
+    const room = await db.get('SELECT * FROM rooms WHERE number = ?', [roomNumber]);
     if (!firstName || !lastName || !phone || !documentId || !room) {
       fail(res, 'Client et chambre sont obligatoires.');
       return true;
     }
     const start = at(checkIn, checkInTime);
     const end = at(checkOut, checkOutTime);
-    const clash = db.all(
+    const clash = (await db.all(
       `SELECT r.*, g.full_name AS guest_name FROM reservations r
        JOIN guests g ON g.id = r.guest_id
        WHERE r.room_id = ? AND r.id != ? AND r.status NOT IN ('annulee', 'terminee')`,
       [room.id, id],
-    ).find((row) => {
+    )).find((row) => {
       const busyStart = at(row.check_in, row.check_in_time || '14:00');
       const busyEnd = at(row.check_out, row.check_out_time || '12:00');
       return start < busyEnd && end > busyStart;
@@ -1209,18 +1211,18 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const guestName = `${firstName} ${lastName}`.trim();
-    db.run(
+    await db.run(
       'UPDATE guests SET full_name=?, first_name=?, last_name=?, phone=?, document_id=? WHERE id=?',
       [guestName, firstName, lastName, phone, documentId, resv.guest_id],
     );
     const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
-    db.run(
+    await db.run(
       `UPDATE reservations SET room_id=?, check_in=?, check_out=?, check_in_time=?, check_out_time=?, total=?, adults=? WHERE id=?`,
       [room.id, checkIn, checkOut, checkInTime, checkOutTime, nights * Number(room.price_night), Number(body.adults || 1), id],
     );
     if (resv.room_id !== room.id) {
-      db.run("UPDATE rooms SET status = 'disponible' WHERE id = ?", [resv.room_id]);
-      if (room.status === 'disponible') db.run("UPDATE rooms SET status = 'reservee' WHERE id = ?", [room.id]);
+      await db.run("UPDATE rooms SET status = 'disponible' WHERE id = ?", [resv.room_id]);
+      if (room.status === 'disponible') await db.run("UPDATE rooms SET status = 'reservee' WHERE id = ?", [room.id]);
     }
     ok(res, { id }, 'Réservation modifiée.');
     return true;
@@ -1232,7 +1234,7 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const id = Number(pathName.split('/')[3]);
-    const resv = db.get(
+    const resv = await db.get(
       `SELECT r.*, rm.number AS room_number FROM reservations r JOIN rooms rm ON rm.id = r.room_id WHERE r.id = ?`,
       [id],
     );
@@ -1240,9 +1242,9 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Réservation introuvable.');
       return true;
     }
-    let people = db.all('SELECT * FROM reservation_occupants WHERE reservation_id = ?', [id]);
+    let people = await db.all('SELECT * FROM reservation_occupants WHERE reservation_id = ?', [id]);
     if (!people.length) {
-      const guest = db.get('SELECT * FROM guests WHERE id = ?', [resv.guest_id]);
+      const guest = await db.get('SELECT * FROM guests WHERE id = ?', [resv.guest_id]);
       people = [
         {
           first_name: guest?.first_name || String(guest?.full_name || '').split(' ')[0],
@@ -1252,25 +1254,26 @@ async function handlePms(req, res, ctx) {
     }
     const createdBy = actor.full_name || 'Réception';
     const now = stampNow();
-    db.run(
+    await db.run(
       `UPDATE client_badges SET status = 'annule', revoked_at = ?
        WHERE reservation_id = ? AND IFNULL(status, 'actif') != 'annule'`,
       [now, id],
     );
-    const badges = people.map((person) => {
+    const badges = [];
+    for (const person of people) {
       const full = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Client';
-      db.run(
+      await db.run(
         `UPDATE client_badges SET status = 'annule', revoked_at = ?
          WHERE room_number = ? AND guest_name = ? AND reservation_id IS NULL AND IFNULL(status, 'actif') != 'annule'`,
         [now, resv.room_number, full],
       );
       const code = `MH-${resv.room_number}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-      db.run(
+      await db.run(
         'INSERT INTO client_badges (guest_name, room_number, valid_from, valid_to, code, created_by, reservation_id, status) VALUES (?,?,?,?,?,?,?,?)',
         [full, resv.room_number, resv.check_in, resv.check_out, code, createdBy, id, 'actif'],
       );
-      return {
-        id: db.lastId(),
+      badges.push({
+        id: await db.lastId(),
         guest_name: full,
         room_number: resv.room_number,
         valid_from: resv.check_in,
@@ -1280,8 +1283,8 @@ async function handlePms(req, res, ctx) {
         code,
         created_by: createdBy,
         status: 'actif',
-      };
-    });
+      });
+    }
     ok(res, { badges }, 'Badges générés.', 201);
     return true;
   }
@@ -1290,20 +1293,20 @@ async function handlePms(req, res, ctx) {
     const id = Number(pathName.split('/')[3]);
     const body = await readBody(req);
     const toNumber = String(body.to_room || '').trim();
-    const resv = db.get(
+    const resv = await db.get(
       `SELECT r.*, g.full_name AS guest_name, rm.number AS from_room FROM reservations r
        JOIN guests g ON g.id = r.guest_id JOIN rooms rm ON rm.id = r.room_id WHERE r.id = ?`,
       [id],
     );
-    const dest = db.get('SELECT * FROM rooms WHERE number = ?', [toNumber]);
+    const dest = await db.get('SELECT * FROM rooms WHERE number = ?', [toNumber]);
     if (!resv || !dest) {
       fail(res, 'Chambre ou séjour introuvable.');
       return true;
     }
-    db.run('UPDATE reservations SET room_id = ? WHERE id = ?', [dest.id, id]);
-    db.run("UPDATE rooms SET status = 'disponible' WHERE number = ?", [resv.from_room]);
-    db.run("UPDATE rooms SET status = 'occupee' WHERE id = ?", [dest.id]);
-    db.run(
+    await db.run('UPDATE reservations SET room_id = ? WHERE id = ?', [dest.id, id]);
+    await db.run("UPDATE rooms SET status = 'disponible' WHERE number = ?", [resv.from_room]);
+    await db.run("UPDATE rooms SET status = 'occupee' WHERE id = ?", [dest.id]);
+    await db.run(
       'INSERT INTO room_transfers (reservation_id, guest_name, from_room, to_room, reason, at) VALUES (?,?,?,?,?,?)',
       [id, resv.guest_name, resv.from_room, dest.number, body.reason || 'Transfert', stampNow()],
     );
@@ -1313,7 +1316,7 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'POST' && pathName === '/pms/lost-items/return') {
     const body = await readBody(req);
-    db.run("UPDATE lost_items SET status = 'restitue', returned_at = ? WHERE id = ?", [day(0), Number(body.id)]);
+    await db.run("UPDATE lost_items SET status = 'restitue', returned_at = ? WHERE id = ?", [day(0), Number(body.id)]);
     ok(res, { id: body.id }, 'Objet restitué.');
     return true;
   }
@@ -1322,7 +1325,7 @@ async function handlePms(req, res, ctx) {
     const body = await readBody(req);
     const room = String(body.room_number || '');
     const taskStatus = String(body.task_status || body.status || 'en_cours');
-    const existing = db.get('SELECT status FROM rooms WHERE number = ?', [room]);
+    const existing = await db.get('SELECT status FROM rooms WHERE number = ?', [room]);
     if (existing && existing.status === 'maintenance') {
       if (actor.role !== 'manager' && actor.role !== 'owner') {
         fail(res, 'Seul le gérant peut sortir une chambre de maintenance.', 403);
@@ -1334,22 +1337,22 @@ async function handlePms(req, res, ctx) {
       }
     }
     const roomStatus = taskStatus === 'pret' ? 'disponible' : 'nettoyage';
-    db.run('UPDATE rooms SET status = ? WHERE number = ?', [roomStatus, room]);
+    await db.run('UPDATE rooms SET status = ? WHERE number = ?', [roomStatus, room]);
     if (body.task_id) {
       if (taskStatus === 'pret') {
-        db.run('UPDATE hk_tasks SET status = ?, finished_at = ? WHERE id = ?', [taskStatus, stampNow(), Number(body.task_id)]);
+        await db.run('UPDATE hk_tasks SET status = ?, finished_at = ? WHERE id = ?', [taskStatus, stampNow(), Number(body.task_id)]);
       } else if (taskStatus === 'en_cours') {
-        db.run('UPDATE hk_tasks SET status = ?, started_at = COALESCE(started_at, ?) WHERE id = ?', [
+        await db.run('UPDATE hk_tasks SET status = ?, started_at = COALESCE(started_at, ?) WHERE id = ?', [
           taskStatus,
           stampNow(),
           Number(body.task_id),
         ]);
       } else {
-        db.run('UPDATE hk_tasks SET status = ? WHERE id = ?', [taskStatus, Number(body.task_id)]);
+        await db.run('UPDATE hk_tasks SET status = ? WHERE id = ?', [taskStatus, Number(body.task_id)]);
       }
     }
     if (taskStatus === 'pret') {
-      db.run(
+      await db.run(
         `INSERT INTO notifications (category, title, body, href, is_read, created_at)
          VALUES ('ÉTAGES', 'Chambre prête', ?, '/housekeeping', 0, ?)`,
         [`Chambre ${room} nettoyée et prête.`, stampNow()],
@@ -1366,19 +1369,22 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Indiquez la chambre.');
       return true;
     }
-    const roomRow = db.get('SELECT status FROM rooms WHERE number = ?', [room]);
+    const roomRow = await db.get('SELECT status FROM rooms WHERE number = ?', [room]);
     if (roomRow && roomRow.status === 'maintenance') {
       fail(res, 'Cette chambre est en maintenance. Seul le gérant peut la marquer prête.', 403);
       return true;
     }
-    const agents = hkAgentList(db);
+    const agents = await hkAgentList(db);
     const lead = String(body.lead_name || actor.full_name || '').trim();
-    if (!isHkAgentName(db, lead) && actor.role !== 'manager' && actor.role !== 'owner') {
+    if (!await isHkAgentName(db, lead) && actor.role !== 'manager' && actor.role !== 'owner') {
       fail(res, 'Seul un agent d’entretien enregistré peut prendre une chambre en charge.');
       return true;
     }
     const helpers = Array.isArray(body.helpers) ? body.helpers.map(String) : [];
-    const invalid = helpers.filter((name) => name !== lead && !isHkAgentName(db, name));
+    const invalid = [];
+    for (const name of helpers) {
+      if (name !== lead && !(await isHkAgentName(db, name))) invalid.push(name);
+    }
     if (invalid.length) {
       fail(res, 'Les équipiers doivent être des agents d’entretien enregistrés.');
       return true;
@@ -1386,26 +1392,26 @@ async function handlePms(req, res, ctx) {
     let taskId = body.task_id ? Number(body.task_id) : 0;
     const open =
       taskId
-        ? db.get('SELECT * FROM hk_tasks WHERE id = ?', [taskId])
-        : db.get(
+        ? await db.get('SELECT * FROM hk_tasks WHERE id = ?', [taskId])
+        : await db.get(
             "SELECT * FROM hk_tasks WHERE room_number = ? AND status NOT IN ('pret','termine','controle') ORDER BY id DESC LIMIT 1",
             [room],
           );
     if (open) {
       taskId = Number(open.id);
-      db.run(
+      await db.run(
         "UPDATE hk_tasks SET attendant = ?, lead_name = ?, status = 'en_cours', started_at = COALESCE(started_at, ?) WHERE id = ?",
         [lead, lead, stampNow(), taskId],
       );
     } else {
-      db.run(
+      await db.run(
         "INSERT INTO hk_tasks (room_number, attendant, lead_name, priority, status, eta_minutes, due_at, started_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
         [room, lead, lead, body.priority || 'normale', 'en_cours', 40, stampNow(), stampNow(), stampNow()],
       );
-      taskId = db.lastId();
+      taskId = await db.lastId();
     }
-    replaceHkCrew(db, taskId, lead, helpers, agents);
-    db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ?", [room]);
+    await replaceHkCrew(db, taskId, lead, helpers, agents);
+    await db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ?", [room]);
     ok(res, { id: taskId, room }, 'Chambre prise en charge.');
     return true;
   }
@@ -1413,7 +1419,7 @@ async function handlePms(req, res, ctx) {
   if (method === 'POST' && pathName === '/pms/housekeeping/helpers') {
     const body = await readBody(req);
     const taskId = Number(body.task_id);
-    const task = db.get('SELECT * FROM hk_tasks WHERE id = ?', [taskId]);
+    const task = await db.get('SELECT * FROM hk_tasks WHERE id = ?', [taskId]);
     if (!task) {
       fail(res, 'Intervention introuvable.');
       return true;
@@ -1425,12 +1431,15 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const helpers = Array.isArray(body.helpers) ? body.helpers.map(String) : [];
-    const invalid = helpers.filter((name) => name !== lead && !isHkAgentName(db, name));
+    const invalid = [];
+    for (const name of helpers) {
+      if (name !== lead && !(await isHkAgentName(db, name))) invalid.push(name);
+    }
     if (invalid.length) {
       fail(res, 'Les équipiers doivent être des agents d’entretien enregistrés.');
       return true;
     }
-    replaceHkCrew(db, taskId, lead, helpers, hkAgentList(db));
+    await replaceHkCrew(db, taskId, lead, helpers, await hkAgentList(db));
     ok(res, { id: taskId }, 'Équipe mise à jour.');
     return true;
   }
@@ -1443,11 +1452,11 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Indiquez la chambre et le détail du signalement.');
       return true;
     }
-    const open = db.get(
+    const open = await db.get(
       "SELECT id FROM hk_tasks WHERE room_number = ? AND status NOT IN ('pret','termine','controle') ORDER BY id DESC LIMIT 1",
       [room],
     );
-    db.run(
+    await db.run(
       'INSERT INTO hk_issues (room_number, task_id, reporter, category, description, status, at) VALUES (?,?,?,?,?,?,?)',
       [
         room,
@@ -1459,8 +1468,8 @@ async function handlePms(req, res, ctx) {
         stampNow(),
       ],
     );
-    const issueId = db.lastId();
-    db.run(
+    const issueId = await db.lastId();
+    await db.run(
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES ('SIGNALEMENT', ?, ?, '/issues', 0, ?)`,
       [`Chambre ${room}`, description, stampNow()],
@@ -1472,7 +1481,7 @@ async function handlePms(req, res, ctx) {
   if (method === 'POST' && pathName === '/pms/housekeeping/issue/resolve') {
     const body = await readBody(req);
     const id = Number(body.id);
-    const issue = db.get('SELECT * FROM hk_issues WHERE id = ?', [id]);
+    const issue = await db.get('SELECT * FROM hk_issues WHERE id = ?', [id]);
     if (!issue) {
       fail(res, 'Signalement introuvable.');
       return true;
@@ -1489,14 +1498,14 @@ async function handlePms(req, res, ctx) {
           ? 'ouverte'
           : 'resolue';
     if (next === 'resolue') {
-      db.run('UPDATE hk_issues SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?', [
+      await db.run('UPDATE hk_issues SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?', [
         next,
         stampNow(),
         actor.full_name || 'Gérance',
         id,
       ]);
     } else {
-      db.run('UPDATE hk_issues SET status = ?, resolved_at = NULL, resolved_by = NULL WHERE id = ?', [next, id]);
+      await db.run('UPDATE hk_issues SET status = ?, resolved_at = NULL, resolved_by = NULL WHERE id = ?', [next, id]);
     }
     const message =
       next === 'resolue'
@@ -1510,11 +1519,11 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'POST' && pathName === '/pms/maintenance/close') {
     const body = await readBody(req);
-    db.run(
+    await db.run(
       "UPDATE work_orders SET status = 'clos', closed_at = ?, validated_by = ? WHERE id = ?",
       [stampNow(), body.validated_by || 'Hiérarchie', Number(body.id)],
     );
-    if (body.room_number) db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ?", [body.room_number]);
+    if (body.room_number) await db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ?", [body.room_number]);
     ok(res, { id: body.id }, 'Intervention clôturée.');
     return true;
   }
@@ -1528,7 +1537,7 @@ async function handlePms(req, res, ctx) {
     }
     const prepared = [];
     for (const line of lines) {
-      const product = db.get('SELECT * FROM products WHERE id = ?', [Number(line.product_id)]);
+      const product = await db.get('SELECT * FROM products WHERE id = ?', [Number(line.product_id)]);
       const qty = Number(line.qty || 0);
       if (!product || qty <= 0) {
         fail(res, 'Produit ou quantité invalide.');
@@ -1545,7 +1554,7 @@ async function handlePms(req, res, ctx) {
       prepared.push({ product, qty, price: Number(product.price || 0) });
     }
     const total = prepared.reduce((sum, line) => sum + line.qty * line.price, 0);
-    db.run(
+    await db.run(
       'INSERT INTO pos_sales (outlet, seller, guest_name, room_number, total, at) VALUES (?,?,?,?,?,?)',
       [
         'Réception',
@@ -1556,17 +1565,17 @@ async function handlePms(req, res, ctx) {
         stampNow(),
       ],
     );
-    const saleId = db.lastId();
-    prepared.forEach((line) => {
-      db.run('INSERT INTO pos_sale_items (sale_id, product_name, qty, price, product_id) VALUES (?,?,?,?,?)', [
+    const saleId = await db.lastId();
+    for (const line of prepared) {
+      await db.run('INSERT INTO pos_sale_items (sale_id, product_name, qty, price, product_id) VALUES (?,?,?,?,?)', [
         saleId,
         line.product.name,
         line.qty,
         line.price,
         line.product.id,
       ]);
-      db.run('UPDATE products SET stock = stock - ? WHERE id = ?', [line.qty, line.product.id]);
-      db.run(
+      await db.run('UPDATE products SET stock = stock - ? WHERE id = ?', [line.qty, line.product.id]);
+      await db.run(
         'INSERT INTO stock_moves (product_name, warehouse, type, qty, at, note, dest, actor, product_id) VALUES (?,?,?,?,?,?,?,?,?)',
         [
           line.product.name,
@@ -1580,46 +1589,46 @@ async function handlePms(req, res, ctx) {
           line.product.id,
         ],
       );
-    });
+    }
     const guestName = String(body.guest_name || '').trim();
     const roomNumber = String(body.room_number || '').trim();
     if (guestName && roomNumber) {
-      const resv = db.get(
+      const resv = await db.get(
         `SELECT r.id FROM reservations r JOIN rooms rm ON rm.id = r.room_id
          JOIN guests g ON g.id = r.guest_id
          WHERE rm.number = ? AND g.full_name = ? AND r.status = 'en_cours' LIMIT 1`,
         [roomNumber, guestName],
       );
-      db.run(
+      await db.run(
         'INSERT INTO folio_charges (reservation_id, guest_name, source, label, amount, at, outlet) VALUES (?,?,?,?,?,?,?)',
         [resv ? resv.id : null, guestName, 'pos', 'Boutique accueil', total, day(0), 'Réception'],
       );
     }
-    ok(res, saleDetail(db, db.get('SELECT * FROM pos_sales WHERE id = ?', [saleId])), 'Vente enregistrée.', 201);
+    ok(res, await saleDetail(db, await db.get('SELECT * FROM pos_sales WHERE id = ?', [saleId])), 'Vente enregistrée.', 201);
     return true;
   }
 
   if (method === 'POST' && pathName === '/pms/cash/expense') {
     const body = await readBody(req);
-    const session = db.get("SELECT * FROM cash_sessions WHERE status = 'ouverte' ORDER BY id DESC LIMIT 1");
+    const session = await db.get("SELECT * FROM cash_sessions WHERE status = 'ouverte' ORDER BY id DESC LIMIT 1");
     if (!session) {
       fail(res, 'Aucune caisse ouverte.');
       return true;
     }
-    db.run('INSERT INTO cash_lines (session_id, type, label, amount, at) VALUES (?,?,?,?,?)', [
+    await db.run('INSERT INTO cash_lines (session_id, type, label, amount, at) VALUES (?,?,?,?,?)', [
       session.id,
       'expense',
       body.label || 'Dépense',
       Number(body.amount || 0),
       stampNow(),
     ]);
-    ok(res, { id: db.lastId() }, 'Dépense enregistrée.');
+    ok(res, { id: await db.lastId() }, 'Dépense enregistrée.');
     return true;
   }
 
   if (method === 'GET' && pathName === '/pms/desk') {
     const today = day(0);
-    const recentRes = db.all(
+    const recentRes = await db.all(
       `SELECT r.*, g.full_name AS guest_name, rm.number AS room_number
        FROM reservations r JOIN guests g ON g.id = r.guest_id JOIN rooms rm ON rm.id = r.room_id
        WHERE date(r.check_in) = date(?) OR date(r.check_out) = date(?)
@@ -1628,17 +1637,17 @@ async function handlePms(req, res, ctx) {
     );
     ok(res, {
       today,
-      reservations: Number(db.get('SELECT COUNT(*) AS n FROM reservations WHERE date(check_in) = date(?)', [today]).n),
-      in_house: Number(db.get("SELECT COUNT(*) AS n FROM reservations WHERE status = 'en_cours'").n),
-      checkouts: Number(db.get('SELECT COUNT(*) AS n FROM reservations WHERE date(check_out) = date(?)', [today]).n),
-      sales_count: Number(db.get('SELECT COUNT(*) AS n FROM pos_sales WHERE date(at) = date(?)', [today]).n),
-      sales_amount: Number(db.get('SELECT SUM(total) AS n FROM pos_sales WHERE date(at) = date(?)', [today]).n || 0),
-      visits: Number(db.get('SELECT COUNT(*) AS n FROM visits WHERE date(arrived_at) = date(?)', [today]).n),
-      badges: Number(db.get("SELECT COUNT(*) AS n FROM client_badges WHERE date(valid_to) >= date('now')").n),
-      suggestions_open: suggestionCounts(db, actor).open,
-      hk_urgent: Number(db.get("SELECT COUNT(*) AS n FROM hk_tasks WHERE priority = 'urgente' AND status != 'pret'").n),
-      hk_open: Number(db.get("SELECT COUNT(*) AS n FROM hk_tasks WHERE status IN ('non_prise','en_cours')").n),
-      rooms: db.get(
+      reservations: Number((await db.get('SELECT COUNT(*) AS n FROM reservations WHERE date(check_in) = date(?)', [today])).n),
+      in_house: Number((await db.get("SELECT COUNT(*) AS n FROM reservations WHERE status = 'en_cours'")).n),
+      checkouts: Number((await db.get('SELECT COUNT(*) AS n FROM reservations WHERE date(check_out) = date(?)', [today])).n),
+      sales_count: Number((await db.get('SELECT COUNT(*) AS n FROM pos_sales WHERE date(at) = date(?)', [today])).n),
+      sales_amount: Number((await db.get('SELECT SUM(total) AS n FROM pos_sales WHERE date(at) = date(?)', [today])).n || 0),
+      visits: Number((await db.get('SELECT COUNT(*) AS n FROM visits WHERE date(arrived_at) = date(?)', [today])).n),
+      badges: Number((await db.get("SELECT COUNT(*) AS n FROM client_badges WHERE date(valid_to) >= date('now')")).n),
+      suggestions_open: (await suggestionCounts(db, actor)).open,
+      hk_urgent: Number((await db.get("SELECT COUNT(*) AS n FROM hk_tasks WHERE priority = 'urgente' AND status != 'pret'")).n),
+      hk_open: Number((await db.get("SELECT COUNT(*) AS n FROM hk_tasks WHERE status IN ('non_prise','en_cours')")).n),
+      rooms: await db.get(
         `SELECT
           SUM(CASE WHEN status = 'disponible' THEN 1 ELSE 0 END) AS available,
           SUM(CASE WHEN status = 'occupee' THEN 1 ELSE 0 END) AS occupied,
@@ -1646,7 +1655,7 @@ async function handlePms(req, res, ctx) {
           SUM(CASE WHEN status = 'maintenance' THEN 1 ELSE 0 END) AS blocked
          FROM rooms`,
       ),
-      recent_sales: db.all(
+      recent_sales: await db.all(
         `SELECT s.*, (SELECT product_name FROM pos_sale_items i WHERE i.sale_id = s.id LIMIT 1) AS item
          FROM pos_sales s ORDER BY at DESC LIMIT 6`,
       ),
@@ -1657,7 +1666,7 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'GET' && pathName === '/pms/badges') {
     const today = day(0);
-    const items = db.all('SELECT * FROM client_badges ORDER BY id DESC').map((row) => {
+    const items = (await db.all('SELECT * FROM client_badges ORDER BY id DESC')).map((row) => {
       const status = row.status || 'actif';
       const until = String(row.valid_to || '').slice(0, 10);
       const state = status === 'annule' ? 'annule' : until && until < today ? 'expire' : 'actif';
@@ -1669,17 +1678,17 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'GET' && pathName === '/pms/workspace') {
     ok(res, {
-      badges: db.all('SELECT * FROM client_badges ORDER BY id DESC LIMIT 40'),
+      badges: await db.all('SELECT * FROM client_badges ORDER BY id DESC LIMIT 40'),
       suggestions:
         actor.role === 'owner'
-          ? db.all('SELECT * FROM suggestions ORDER BY id DESC LIMIT 40')
-          : db.all('SELECT * FROM suggestions WHERE author = ? ORDER BY id DESC LIMIT 40', [actor.full_name]),
-      cash: db.all('SELECT * FROM cash_moves ORDER BY id DESC LIMIT 40'),
-      shifts: db.all('SELECT * FROM staff_shifts ORDER BY day DESC, start_hour'),
-      visits: db.all('SELECT * FROM visits ORDER BY arrived_at DESC LIMIT 40'),
-      staff: db.all('SELECT id, full_name, role, department FROM staff WHERE status = ? ORDER BY full_name', ['actif']),
-      products: db.all('SELECT * FROM products ORDER BY name'),
-      rooms: db.all('SELECT id, number, type, status, price_night FROM rooms ORDER BY number'),
+          ? await db.all('SELECT * FROM suggestions ORDER BY id DESC LIMIT 40')
+          : await db.all('SELECT * FROM suggestions WHERE author = ? ORDER BY id DESC LIMIT 40', [actor.full_name]),
+      cash: await db.all('SELECT * FROM cash_moves ORDER BY id DESC LIMIT 40'),
+      shifts: await db.all('SELECT * FROM staff_shifts ORDER BY day DESC, start_hour'),
+      visits: await db.all('SELECT * FROM visits ORDER BY arrived_at DESC LIMIT 40'),
+      staff: await db.all('SELECT id, full_name, role, department FROM staff WHERE status = ? ORDER BY full_name', ['actif']),
+      products: await db.all('SELECT * FROM products ORDER BY name'),
+      rooms: await db.all('SELECT id, number, type, status, price_night FROM rooms ORDER BY number'),
     });
     return true;
   }
@@ -1691,7 +1700,7 @@ async function handlePms(req, res, ctx) {
     }
     const body = await readBody(req);
     const code = `MH-${String(body.room_number || '00')}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    db.run(
+    await db.run(
       'INSERT INTO client_badges (guest_name, room_number, valid_from, valid_to, code, created_by, status) VALUES (?,?,?,?,?,?,?)',
       [
         body.guest_name,
@@ -1703,17 +1712,17 @@ async function handlePms(req, res, ctx) {
         'actif',
       ],
     );
-    ok(res, { id: db.lastId(), code }, 'Badge généré.', 201);
+    ok(res, { id: await db.lastId(), code }, 'Badge généré.', 201);
     return true;
   }
 
   if (method === 'POST' && pathName === '/pms/visits') {
     const body = await readBody(req);
-    db.run(
+    await db.run(
       'INSERT INTO visits (visitor_name, host_name, room_number, purpose, arrived_at, left_at) VALUES (?,?,?,?,?,?)',
       [body.visitor_name, body.host_name, body.room_number, body.purpose || 'Visite', stampNow(), null],
     );
-    ok(res, { id: db.lastId() }, 'Visite enregistrée.', 201);
+    ok(res, { id: await db.lastId() }, 'Visite enregistrée.', 201);
     return true;
   }
 
@@ -1722,14 +1731,14 @@ async function handlePms(req, res, ctx) {
       fail(res, 'La gestion des employés est réservée au propriétaire.', 403);
       return true;
     }
-    const items = db
-      .all(
+    const items = (
+      await db.all(
         `SELECT id, full_name, email, phone, role, status, photo, last_login, created_at
          FROM users
          WHERE role IN ('receptionist','manager','housekeeping','owner')
          ORDER BY full_name`,
       )
-      .map(publicEmployee);
+    ).map(publicEmployee);
     ok(res, { items });
     return true;
   }
@@ -1744,11 +1753,11 @@ async function handlePms(req, res, ctx) {
       fail(res, parsed.error);
       return true;
     }
-    if (db.get('SELECT id FROM users WHERE email = ? LIMIT 1', [parsed.email])) {
+    if (await db.get('SELECT id FROM users WHERE email = ? LIMIT 1', [parsed.email])) {
       fail(res, 'Un compte existe déjà avec cet e-mail.', 409);
       return true;
     }
-    db.run('INSERT INTO users (full_name, email, phone, password_hash, role, status) VALUES (?,?,?,?,?,?)', [
+    await db.run('INSERT INTO users (full_name, email, phone, password_hash, role, status) VALUES (?,?,?,?,?,?)', [
       parsed.fullName,
       parsed.email,
       parsed.phone,
@@ -1756,9 +1765,9 @@ async function handlePms(req, res, ctx) {
       parsed.role,
       'actif',
     ]);
-    const created = db.get('SELECT * FROM users WHERE id = ?', [db.lastId()]);
+    const created = await db.get('SELECT * FROM users WHERE id = ?', [db.lastId()]);
     try {
-      syncHrRecord(db, created);
+      await syncHrRecord(db, created);
     } catch {
       /* table staff optionnelle */
     }
@@ -1773,7 +1782,7 @@ async function handlePms(req, res, ctx) {
     }
     const body = await readBody(req);
     const id = Number(body.id);
-    const target = db.get('SELECT * FROM users WHERE id = ?', [id]);
+    const target = await db.get('SELECT * FROM users WHERE id = ?', [id]);
     if (!target || !['receptionist', 'manager', 'housekeeping', 'owner'].includes(target.role)) {
       fail(res, 'Employé introuvable.');
       return true;
@@ -1791,25 +1800,25 @@ async function handlePms(req, res, ctx) {
       fail(res, parsed.error);
       return true;
     }
-    const clash = db.get('SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1', [parsed.email, id]);
+    const clash = await db.get('SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1', [parsed.email, id]);
     if (clash) {
       fail(res, 'Un compte existe déjà avec cet e-mail.', 409);
       return true;
     }
     if (parsed.password) {
-      db.run(
+      await db.run(
         'UPDATE users SET full_name=?, email=?, phone=?, role=?, password_hash=?, updated_at=datetime(\'now\') WHERE id=?',
         [parsed.fullName, parsed.email, parsed.phone, parsed.role, db.hashPassword(parsed.password), id],
       );
     } else {
-      db.run(
+      await db.run(
         'UPDATE users SET full_name=?, email=?, phone=?, role=?, updated_at=datetime(\'now\') WHERE id=?',
         [parsed.fullName, parsed.email, parsed.phone, parsed.role, id],
       );
     }
-    const fresh = db.get('SELECT * FROM users WHERE id = ?', [id]);
+    const fresh = await db.get('SELECT * FROM users WHERE id = ?', [id]);
     try {
-      syncHrRecord(db, fresh);
+      await syncHrRecord(db, fresh);
     } catch {
       /* ignore */
     }
@@ -1824,7 +1833,7 @@ async function handlePms(req, res, ctx) {
     }
     const body = await readBody(req);
     const id = Number(body.id);
-    const target = db.get('SELECT * FROM users WHERE id = ?', [id]);
+    const target = await db.get('SELECT * FROM users WHERE id = ?', [id]);
     if (!target || !['receptionist', 'manager', 'housekeeping', 'owner'].includes(target.role)) {
       fail(res, 'Employé introuvable.');
       return true;
@@ -1833,11 +1842,11 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Impossible de bannir le propriétaire.');
       return true;
     }
-    db.run("UPDATE users SET status = 'banni', updated_at = datetime('now') WHERE id = ?", [id]);
-    db.run('DELETE FROM auth_tokens WHERE user_id = ?', [id]);
-    const fresh = db.get('SELECT * FROM users WHERE id = ?', [id]);
+    await db.run("UPDATE users SET status = 'banni', updated_at = datetime('now') WHERE id = ?", [id]);
+    await db.run('DELETE FROM auth_tokens WHERE user_id = ?', [id]);
+    const fresh = await db.get('SELECT * FROM users WHERE id = ?', [id]);
     try {
-      syncHrRecord(db, fresh);
+      await syncHrRecord(db, fresh);
     } catch {
       /* ignore */
     }
@@ -1852,15 +1861,15 @@ async function handlePms(req, res, ctx) {
     }
     const body = await readBody(req);
     const id = Number(body.id);
-    const target = db.get('SELECT * FROM users WHERE id = ?', [id]);
+    const target = await db.get('SELECT * FROM users WHERE id = ?', [id]);
     if (!target || !['receptionist', 'manager', 'housekeeping', 'owner'].includes(target.role)) {
       fail(res, 'Employé introuvable.');
       return true;
     }
-    db.run("UPDATE users SET status = 'actif', updated_at = datetime('now') WHERE id = ?", [id]);
-    const fresh = db.get('SELECT * FROM users WHERE id = ?', [id]);
+    await db.run("UPDATE users SET status = 'actif', updated_at = datetime('now') WHERE id = ?", [id]);
+    const fresh = await db.get('SELECT * FROM users WHERE id = ?', [id]);
     try {
-      syncHrRecord(db, fresh);
+      await syncHrRecord(db, fresh);
     } catch {
       /* ignore */
     }
@@ -1868,8 +1877,35 @@ async function handlePms(req, res, ctx) {
     return true;
   }
 
+  if (method === 'POST' && pathName === '/pms/employees/delete') {
+    if (actor.role !== 'owner') {
+      fail(res, 'Seul le propriétaire peut supprimer un employé.', 403);
+      return true;
+    }
+    const body = await readBody(req);
+    const id = Number(body.id);
+    const target = await db.get('SELECT * FROM users WHERE id = ?', [id]);
+    if (!target || !['receptionist', 'manager', 'housekeeping', 'owner'].includes(target.role)) {
+      fail(res, 'Employé introuvable.');
+      return true;
+    }
+    if (Number(target.id) === Number(actor.id) || target.role === 'owner') {
+      fail(res, 'Impossible de supprimer le propriétaire.');
+      return true;
+    }
+    await db.run('DELETE FROM auth_tokens WHERE user_id = ?', [id]);
+    try {
+      await db.run("UPDATE staff SET status = 'arret' WHERE lower(email) = ?", [String(target.email || '').toLowerCase()]);
+    } catch {
+      /* ignore */
+    }
+    await db.run('DELETE FROM users WHERE id = ?', [id]);
+    ok(res, { id }, 'Employé supprimé.');
+    return true;
+  }
+
   if (method === 'GET' && pathName === '/pms/suggestions') {
-    let items = db.all('SELECT * FROM suggestions ORDER BY id DESC');
+    let items = await db.all('SELECT * FROM suggestions ORDER BY id DESC');
     if (actor.role !== 'owner') {
       items = items.filter((item) => item.author === actor.full_name);
     }
@@ -1879,9 +1915,9 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'GET' && pathName === '/pms/messages') {
     try {
-      ok(res, messagesPayload(db, actor));
+      ok(res, await messagesPayload(db, actor));
     } catch {
-      ok(res, { contacts: staffContacts(db, actor.id), threads: [], messages: [] });
+      ok(res, { contacts: await staffContacts(db, actor.id), threads: [], messages: [] });
     }
     return true;
   }
@@ -1897,13 +1933,13 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Écrivez une suggestion.');
       return true;
     }
-    db.run('INSERT INTO suggestions (author, role, message, status) VALUES (?,?,?,?)', [
+    await db.run('INSERT INTO suggestions (author, role, message, status) VALUES (?,?,?,?)', [
       actor.full_name,
       actor.role || 'receptionist',
       message,
       'ouverte',
     ]);
-    ok(res, { id: db.lastId() }, 'Suggestion envoyée.', 201);
+    ok(res, { id: await db.lastId() }, 'Suggestion envoyée.', 201);
     return true;
   }
 
@@ -1914,13 +1950,13 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Choisissez un membre de l’équipe.');
       return true;
     }
-    const other = publicContact(db, otherId);
+    const other = await publicContact(db, otherId);
     if (!other || !['receptionist', 'manager', 'housekeeping', 'owner'].includes(other.role)) {
       fail(res, 'Ce compte ne peut pas être contacté.');
       return true;
     }
-    const thread = getOrCreateThread(db, actor.id, otherId);
-    ok(res, { ...messagesPayload(db, actor), thread_id: Number(thread.id) }, 'Conversation ouverte.');
+    const thread = await getOrCreateThread(db, actor.id, otherId);
+    ok(res, { ...await messagesPayload(db, actor), thread_id: Number(thread.id) }, 'Conversation ouverte.');
     return true;
   }
 
@@ -1942,14 +1978,14 @@ async function handlePms(req, res, ctx) {
     }
     let threadId = Number(body.thread_id || 0);
     if (!threadId && body.user_id) {
-      threadId = Number(getOrCreateThread(db, actor.id, Number(body.user_id)).id);
+      threadId = Number((await getOrCreateThread(db, actor.id, Number(body.user_id))).id);
     }
-    const thread = db.get('SELECT * FROM chat_threads WHERE id = ?', [threadId]);
+    const thread = await db.get('SELECT * FROM chat_threads WHERE id = ?', [threadId]);
     if (!thread || (Number(thread.user_a) !== Number(actor.id) && Number(thread.user_b) !== Number(actor.id))) {
       fail(res, 'Conversation introuvable.');
       return true;
     }
-    db.run(
+    await db.run(
       `INSERT INTO chat_messages
         (thread_id, sender_id, body, created_at, attachment_url, attachment_name, attachment_mime, attachment_size)
        VALUES (?,?,?,?,?,?,?,?)`,
@@ -1964,7 +2000,7 @@ async function handlePms(req, res, ctx) {
         attachment ? attachment.size : null,
       ],
     );
-    ok(res, { ...messagesPayload(db, actor), thread_id: threadId }, 'Message envoyé.');
+    ok(res, { ...await messagesPayload(db, actor), thread_id: threadId }, 'Message envoyé.');
     return true;
   }
 
@@ -1976,12 +2012,12 @@ async function handlePms(req, res, ctx) {
     const body = await readBody(req);
     const status = body.status === 'refusee' ? 'refusee' : 'approuvee';
     const id = Number(body.id);
-    const row = db.get('SELECT * FROM suggestions WHERE id = ?', [id]);
+    const row = await db.get('SELECT * FROM suggestions WHERE id = ?', [id]);
     if (!row) {
       fail(res, 'Suggestion introuvable.');
       return true;
     }
-    db.run('UPDATE suggestions SET status = ?, reply = ? WHERE id = ?', [
+    await db.run('UPDATE suggestions SET status = ?, reply = ? WHERE id = ?', [
       status,
       status === 'approuvee' ? 'Approuvée' : 'Refusée',
       id,
@@ -1996,21 +2032,21 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const body = await readBody(req);
-    db.run("UPDATE suggestions SET reply = ?, status = 'traitee' WHERE id = ?", [body.reply, Number(body.id)]);
+    await db.run("UPDATE suggestions SET reply = ?, status = 'traitee' WHERE id = ?", [body.reply, Number(body.id)]);
     ok(res, { id: body.id }, 'Réponse enregistrée.');
     return true;
   }
 
   if (method === 'POST' && pathName === '/pms/cash-moves') {
     const body = await readBody(req);
-    db.run('INSERT INTO cash_moves (kind, label, amount, actor, at) VALUES (?,?,?,?,?)', [
+    await db.run('INSERT INTO cash_moves (kind, label, amount, actor, at) VALUES (?,?,?,?,?)', [
       body.kind === 'sortie' ? 'sortie' : 'entree',
       body.label,
       Number(body.amount || 0),
       body.actor || actor.full_name || 'Gérance',
       stampNow(),
     ]);
-    ok(res, { id: db.lastId() }, 'Mouvement de caisse enregistré.', 201);
+    ok(res, { id: await db.lastId() }, 'Mouvement de caisse enregistré.', 201);
     return true;
   }
 
@@ -2030,7 +2066,7 @@ async function handlePms(req, res, ctx) {
     }
     const id = body.id ? Number(body.id) : 0;
     if (id) {
-      db.run('UPDATE staff_shifts SET staff_name=?, day=?, start_hour=?, end_hour=?, task=? WHERE id=?', [
+      await db.run('UPDATE staff_shifts SET staff_name=?, day=?, start_hour=?, end_hour=?, task=? WHERE id=?', [
         staffName,
         shiftDay,
         startHour,
@@ -2041,14 +2077,14 @@ async function handlePms(req, res, ctx) {
       ok(res, { id }, 'Vacation mise à jour.');
       return true;
     }
-    db.run('INSERT INTO staff_shifts (staff_name, day, start_hour, end_hour, task) VALUES (?,?,?,?,?)', [
+    await db.run('INSERT INTO staff_shifts (staff_name, day, start_hour, end_hour, task) VALUES (?,?,?,?,?)', [
       staffName,
       shiftDay,
       startHour,
       endHour,
       String(body.task || '').trim(),
     ]);
-    ok(res, { id: db.lastId() }, 'Vacation planifiée.', 201);
+    ok(res, { id: await db.lastId() }, 'Vacation planifiée.', 201);
     return true;
   }
 
@@ -2058,7 +2094,7 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const body = await readBody(req);
-    db.run('DELETE FROM staff_shifts WHERE id = ?', [Number(body.id)]);
+    await db.run('DELETE FROM staff_shifts WHERE id = ?', [Number(body.id)]);
     ok(res, { id: body.id }, 'Vacation retirée.');
     return true;
   }
@@ -2076,7 +2112,7 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Indiquez la tâche, l’employé et le jour.');
       return true;
     }
-    db.run('INSERT INTO work_tasks (title, assignee, day, status, notes, created_at) VALUES (?,?,?,?,?,?)', [
+    await db.run('INSERT INTO work_tasks (title, assignee, day, status, notes, created_at) VALUES (?,?,?,?,?,?)', [
       title,
       assignee,
       jobDay,
@@ -2084,7 +2120,7 @@ async function handlePms(req, res, ctx) {
       String(body.notes || '').trim(),
       stampNow(),
     ]);
-    ok(res, { id: db.lastId() }, 'Tâche planifiée.', 201);
+    ok(res, { id: await db.lastId() }, 'Tâche planifiée.', 201);
     return true;
   }
 
@@ -2095,7 +2131,7 @@ async function handlePms(req, res, ctx) {
     }
     const body = await readBody(req);
     const status = body.status === 'fait' ? 'fait' : body.status === 'en_cours' ? 'en_cours' : 'a_faire';
-    db.run('UPDATE work_tasks SET status = ? WHERE id = ?', [status, Number(body.id)]);
+    await db.run('UPDATE work_tasks SET status = ? WHERE id = ?', [status, Number(body.id)]);
     ok(res, { id: body.id, status }, 'Tâche mise à jour.');
     return true;
   }
@@ -2106,7 +2142,7 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const body = await readBody(req);
-    db.run('DELETE FROM work_tasks WHERE id = ?', [Number(body.id)]);
+    await db.run('DELETE FROM work_tasks WHERE id = ?', [Number(body.id)]);
     ok(res, { id: body.id }, 'Tâche retirée.');
     return true;
   }
@@ -2129,7 +2165,7 @@ async function handlePms(req, res, ctx) {
     }
     let roomId = body.id ? Number(body.id) : 0;
     if (roomId) {
-      db.run(
+      await db.run(
         'UPDATE rooms SET number=?, type=?, floor=?, price_night=?, capacity=?, photo=?, video=?, description=?, status=? WHERE id=?',
         [
           number,
@@ -2145,7 +2181,7 @@ async function handlePms(req, res, ctx) {
         ],
       );
     } else {
-      db.run(
+      await db.run(
         'INSERT INTO rooms (number, type, floor, status, price_night, capacity, photo, description, video) VALUES (?,?,?,?,?,?,?,?,?)',
         [
           number,
@@ -2159,20 +2195,20 @@ async function handlePms(req, res, ctx) {
           video,
         ],
       );
-      roomId = db.lastId();
+      roomId = await db.lastId();
     }
-    db.run('DELETE FROM room_photos WHERE room_id = ?', [roomId]);
-    db.run('DELETE FROM room_videos WHERE room_id = ?', [roomId]);
-    db.run('DELETE FROM room_equipment WHERE room_id = ?', [roomId]);
-    photos.forEach((url, index) => {
-      db.run('INSERT INTO room_photos (room_id, url, sort) VALUES (?,?,?)', [roomId, url, index]);
-    });
-    videos.forEach((url, index) => {
-      db.run('INSERT INTO room_videos (room_id, url, sort) VALUES (?,?,?)', [roomId, url, index]);
-    });
-    equipmentIds.forEach((equipmentId) => {
-      db.run('INSERT OR IGNORE INTO room_equipment (room_id, equipment_id) VALUES (?,?)', [roomId, equipmentId]);
-    });
+    await db.run('DELETE FROM room_photos WHERE room_id = ?', [roomId]);
+    await db.run('DELETE FROM room_videos WHERE room_id = ?', [roomId]);
+    await db.run('DELETE FROM room_equipment WHERE room_id = ?', [roomId]);
+    for (let index = 0; index < photos.length; index += 1) {
+      await db.run('INSERT INTO room_photos (room_id, url, sort) VALUES (?,?,?)', [roomId, photos[index], index]);
+    }
+    for (let index = 0; index < videos.length; index += 1) {
+      await db.run('INSERT INTO room_videos (room_id, url, sort) VALUES (?,?,?)', [roomId, videos[index], index]);
+    }
+    for (const equipmentId of equipmentIds) {
+      await db.run('INSERT OR IGNORE INTO room_equipment (room_id, equipment_id) VALUES (?,?)', [roomId, equipmentId]);
+    }
     ok(res, { id: roomId }, body.id ? 'Chambre enregistrée.' : 'Chambre créée.', body.id ? 200 : 201);
     return true;
   }
@@ -2184,13 +2220,13 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Indiquez le nom de l’équipement.');
       return true;
     }
-    db.run('INSERT INTO equipment (name, category, icon, quantity) VALUES (?,?,?,?)', [
+    await db.run('INSERT INTO equipment (name, category, icon, quantity) VALUES (?,?,?,?)', [
       name,
       body.category || 'Confort',
       body.icon || 'cabinet',
       1,
     ]);
-    ok(res, { id: db.lastId(), name }, 'Équipement créé.', 201);
+    ok(res, { id: await db.lastId(), name }, 'Équipement créé.', 201);
     return true;
   }
 
@@ -2201,8 +2237,8 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Équipement introuvable.');
       return true;
     }
-    db.run('DELETE FROM room_equipment WHERE equipment_id = ?', [id]);
-    db.run('DELETE FROM equipment WHERE id = ?', [id]);
+    await db.run('DELETE FROM room_equipment WHERE equipment_id = ?', [id]);
+    await db.run('DELETE FROM equipment WHERE id = ?', [id]);
     ok(res, { id }, 'Équipement supprimé.');
     return true;
   }
@@ -2214,10 +2250,10 @@ async function handlePms(req, res, ctx) {
     }
     const body = await readBody(req);
     const id = Number(body.id);
-    db.run('DELETE FROM room_photos WHERE room_id = ?', [id]);
-    db.run('DELETE FROM room_videos WHERE room_id = ?', [id]);
-    db.run('DELETE FROM room_equipment WHERE room_id = ?', [id]);
-    db.run('DELETE FROM rooms WHERE id = ?', [id]);
+    await db.run('DELETE FROM room_photos WHERE room_id = ?', [id]);
+    await db.run('DELETE FROM room_videos WHERE room_id = ?', [id]);
+    await db.run('DELETE FROM room_equipment WHERE room_id = ?', [id]);
+    await db.run('DELETE FROM rooms WHERE id = ?', [id]);
     ok(res, { id }, 'Chambre supprimée.');
     return true;
   }
@@ -2234,24 +2270,24 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Statut invalide.');
       return true;
     }
-    const room = db.get('SELECT * FROM rooms WHERE id = ?', [id]);
+    const room = await db.get('SELECT * FROM rooms WHERE id = ?', [id]);
     if (!room) {
       fail(res, 'Chambre introuvable.');
       return true;
     }
-    db.run('UPDATE rooms SET status = ? WHERE id = ?', [status, id]);
+    await db.run('UPDATE rooms SET status = ? WHERE id = ?', [status, id]);
     if (status === 'disponible') {
-      db.run(
+      await db.run(
         "UPDATE hk_tasks SET status = 'pret', finished_at = COALESCE(finished_at, ?) WHERE room_number = ? AND status NOT IN ('pret','termine','controle')",
         [stampNow(), room.number],
       );
-      db.run(
+      await db.run(
         `INSERT INTO notifications (category, title, body, href, is_read, created_at)
          VALUES ('ÉTAGES', 'Chambre prête', ?, '/rooms', 0, ?)`,
         [`Chambre ${room.number} marquée prête par le gérant.`, stampNow()],
       );
     } else {
-      db.run(
+      await db.run(
         `INSERT INTO notifications (category, title, body, href, is_read, created_at)
          VALUES ('MAINTENANCE', 'Chambre indisponible', ?, '/rooms', 0, ?)`,
         [`Chambre ${room.number} placée en maintenance.`, stampNow()],
@@ -2267,8 +2303,8 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const body = await readBody(req);
-    db.run("UPDATE rooms SET status = 'maintenance' WHERE number = ?", [body.room_number]);
-    db.run(
+    await db.run("UPDATE rooms SET status = 'maintenance' WHERE number = ?", [body.room_number]);
+    await db.run(
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES ('MAINTENANCE', 'Chambre indisponible', ?, '/rooms', 0, ?)`,
       [`Chambre ${body.room_number} placée hors service.`, stampNow()],
@@ -2279,17 +2315,17 @@ async function handlePms(req, res, ctx) {
 
   if (method === 'POST' && pathName === '/pms/housekeeping/urgent') {
     const body = await readBody(req);
-    db.run(
+    await db.run(
       'INSERT INTO hk_tasks (room_number, attendant, priority, status, eta_minutes, due_at) VALUES (?,?,?,?,?,?)',
       [body.room_number, body.attendant || 'Étages', 'urgente', 'non_prise', 20, stampNow()],
     );
-    db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ?", [body.room_number]);
-    db.run(
+    await db.run("UPDATE rooms SET status = 'nettoyage' WHERE number = ?", [body.room_number]);
+    await db.run(
       `INSERT INTO notifications (category, title, body, href, is_read, created_at)
        VALUES ('URGENCE', 'Nettoyage urgent', ?, '/housekeeping', 0, ?)`,
       [`Chambre ${body.room_number} à nettoyer en urgence.`, stampNow()],
     );
-    ok(res, { id: db.lastId() }, 'Urgence de nettoyage signalée.', 201);
+    ok(res, { id: await db.lastId() }, 'Urgence de nettoyage signalée.', 201);
     return true;
   }
 
@@ -2304,13 +2340,13 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Indiquez le nom du magasin.');
       return true;
     }
-    const existing = db.get('SELECT id FROM warehouses WHERE lower(name) = lower(?)', [name]);
+    const existing = await db.get('SELECT id FROM warehouses WHERE lower(name) = lower(?)', [name]);
     if (existing) {
       fail(res, 'Ce magasin existe déjà.');
       return true;
     }
-    db.run('INSERT INTO warehouses (name, kind) VALUES (?, ?)', [name, String(body.kind || 'magasin').trim() || 'magasin']);
-    ok(res, { id: db.lastId() }, 'Magasin créé.', 201);
+    await db.run('INSERT INTO warehouses (name, kind) VALUES (?, ?)', [name, String(body.kind || 'magasin').trim() || 'magasin']);
+    ok(res, { id: await db.lastId() }, 'Magasin créé.', 201);
     return true;
   }
 
@@ -2325,7 +2361,7 @@ async function handlePms(req, res, ctx) {
       fail(res, 'Indiquez le nom du produit.');
       return true;
     }
-    const warehouse = db.get('SELECT id FROM warehouses WHERE id = ?', [Number(body.warehouse_id || 0)]);
+    const warehouse = await db.get('SELECT id FROM warehouses WHERE id = ?', [Number(body.warehouse_id || 0)]);
     if (!warehouse) {
       fail(res, 'Choisissez le magasin où se trouve le produit.');
       return true;
@@ -2342,18 +2378,18 @@ async function handlePms(req, res, ctx) {
     const price = kind === 'interne' ? 0 : Number(body.price || 0);
     const id = body.id ? Number(body.id) : 0;
     if (id) {
-      db.run(
+      await db.run(
         'UPDATE products SET name=?, category=?, unit=?, stock=?, min_stock=?, cost=?, price=?, warehouse_id=?, lot=?, expires_at=?, photo=?, kind=? WHERE id=?',
         [name, kind === 'vente' ? 'Accueil' : 'Magasin', unit, stock, minStock, cost, price, warehouseId, lot, expiresAt, photo, kind, id],
       );
       ok(res, { id }, 'Produit mis à jour.');
       return true;
     }
-    db.run(
+    await db.run(
       'INSERT INTO products (name, category, unit, stock, min_stock, cost, price, warehouse_id, lot, expires_at, photo, kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
       [name, kind === 'vente' ? 'Accueil' : 'Magasin', unit, stock, minStock, cost, price, warehouseId, lot, expiresAt, photo, kind],
     );
-    ok(res, { id: db.lastId() }, 'Produit enregistré.', 201);
+    ok(res, { id: await db.lastId() }, 'Produit enregistré.', 201);
     return true;
   }
 
@@ -2363,7 +2399,7 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const body = await readBody(req);
-    const product = db.get(
+    const product = await db.get(
       `SELECT p.*, w.name AS warehouse FROM products p LEFT JOIN warehouses w ON w.id = p.warehouse_id WHERE p.id = ?`,
       [Number(body.product_id)],
     );
@@ -2385,8 +2421,8 @@ async function handlePms(req, res, ctx) {
       fail(res, `Stock insuffisant (${product.stock} restant).`);
       return true;
     }
-    db.run('UPDATE products SET stock = stock - ? WHERE id = ?', [qty, product.id]);
-    db.run(
+    await db.run('UPDATE products SET stock = stock - ? WHERE id = ?', [qty, product.id]);
+    await db.run(
       'INSERT INTO stock_moves (product_name, warehouse, type, qty, at, note, dest, actor, product_id) VALUES (?,?,?,?,?,?,?,?,?)',
       [
         product.name,
@@ -2410,7 +2446,7 @@ async function handlePms(req, res, ctx) {
       return true;
     }
     const body = await readBody(req);
-    db.run('DELETE FROM products WHERE id = ?', [Number(body.id)]);
+    await db.run('DELETE FROM products WHERE id = ?', [Number(body.id)]);
     ok(res, { id: body.id }, 'Produit supprimé.');
     return true;
   }
@@ -2418,9 +2454,9 @@ async function handlePms(req, res, ctx) {
   return false;
 }
 
-function saleDetail(db, sale) {
+async function saleDetail(db, sale) {
   if (!sale) return null;
-  const items = db.all('SELECT * FROM pos_sale_items WHERE sale_id = ? ORDER BY id', [sale.id]);
+  const items = await db.all('SELECT * FROM pos_sale_items WHERE sale_id = ? ORDER BY id', [sale.id]);
   return { ...sale, items };
 }
 

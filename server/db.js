@@ -1,51 +1,72 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const initSqlJs = require('sql.js');
+const mysql = require('mysql2/promise');
 const { ensurePmsSchema } = require('./pms-schema');
 const { seedPms } = require('./pms-seed');
+const { translateSql, normalizeRow } = require('./sql-mysql');
 
-const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'myhotel-data') : path.join(__dirname, 'data');
-const DB_FILE = process.env.MYHOTEL_SQLITE_PATH || path.join(DATA_DIR, 'myhotel.sqlite');
-const LEGACY_DB = path.join(__dirname, '..', 'backend', 'data', 'myhotel.sqlite');
-
-let db;
-let persistTimer;
-
-function persist() {
-  if (!db) return;
-  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-  const bytes = db.export();
-  fs.writeFileSync(DB_FILE, Buffer.from(bytes));
+function loadDotEnv() {
+  const candidates = [path.join(__dirname, '..', '.env'), path.join(process.cwd(), '.env')];
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (process.env[key] == null || process.env[key] === '') process.env[key] = value;
+    }
+    break;
+  }
 }
 
-function schedulePersist() {
-  clearTimeout(persistTimer);
-  persistTimer = setTimeout(persist, 80);
+loadDotEnv();
+
+const SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = SERVERLESS ? path.join(os.tmpdir(), 'myhotel-data') : path.join(__dirname, 'data');
+
+function parseMysqlUrl(raw) {
+  const u = new URL(raw);
+  const database = decodeURIComponent((u.pathname || '').replace(/^\//, '').split('/')[0] || '');
+  const sslMode = String(u.searchParams.get('ssl-mode') || u.searchParams.get('sslmode') || u.searchParams.get('ssl') || '').toLowerCase();
+  const wantSsl =
+    ['required', 'require', 'true', '1', 'preferred', 'verify_ca', 'verify_identity'].includes(sslMode) ||
+    u.searchParams.has('sslaccept');
+  return {
+    host: decodeURIComponent(u.hostname),
+    port: Number(u.port || 3306),
+    user: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    database: database || 'myhotel',
+    ssl: wantSsl ? { rejectUnauthorized: false } : undefined,
+  };
 }
 
-function all(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length) stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
-}
-
-function get(sql, params = []) {
-  return all(sql, params)[0] ?? null;
-}
-
-function run(sql, params = []) {
-  db.run(sql, params);
-  schedulePersist();
-  return db.getRowsModified();
-}
-
-function lastId() {
-  return Number(get('SELECT last_insert_rowid() AS id').id);
+function mysqlSettings() {
+  for (const key of ['MYSQL_URL', 'MYHOTEL_MYSQL_URL', 'DATABASE_URL']) {
+    const value = process.env[key];
+    if (value && /^(mysql|mysql2):\/\//i.test(value)) return parseMysqlUrl(value);
+  }
+  const sslFlag = String(process.env.MYHOTEL_MYSQL_SSL || '').toLowerCase();
+  return {
+    host: process.env.MYHOTEL_MYSQL_HOST || '127.0.0.1',
+    port: Number(process.env.MYHOTEL_MYSQL_PORT || 3306),
+    user: process.env.MYHOTEL_MYSQL_USER || 'root',
+    password: process.env.MYHOTEL_MYSQL_PASSWORD ?? '',
+    database: process.env.MYHOTEL_MYSQL_DATABASE || 'myhotel',
+    ssl: sslFlag === '1' || sslFlag === 'true' || sslFlag === 'required' ? { rejectUnauthorized: false } : undefined,
+  };
 }
 
 function hashPassword(password) {
@@ -83,10 +104,52 @@ function publicUser(user) {
   };
 }
 
-function ensureSchema() {
-  db.run('PRAGMA foreign_keys = ON');
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
+function createApi(pool) {
+  let lastInsertId = 0;
+
+  async function all(sql, params = []) {
+    const translated = translateSql(sql);
+    try {
+      const [rows] = await pool.query(translated, params);
+      return Array.isArray(rows) ? rows.map(normalizeRow) : [];
+    } catch (error) {
+      error.message = `${error.message} — ${translated}`;
+      throw error;
+    }
+  }
+
+  async function get(sql, params = []) {
+    const rows = await all(sql, params);
+    return rows[0] ?? null;
+  }
+
+  async function run(sql, params = []) {
+    const [result] = await pool.query(translateSql(sql), params);
+    if (result && typeof result.insertId === 'number' && result.insertId > 0) {
+      lastInsertId = Number(result.insertId);
+    }
+    return Number(result?.affectedRows || 0);
+  }
+
+  async function lastId() {
+    return lastInsertId;
+  }
+
+  return {
+    all,
+    get,
+    run,
+    lastId,
+    persist() {},
+    hashPassword,
+    verifyPassword,
+    publicUser,
+  };
+}
+
+async function ensureSchema(db) {
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
@@ -94,20 +157,16 @@ function ensureSchema() {
       password_hash TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS auth_tokens (
+    )`,
+    `CREATE TABLE IF NOT EXISTS auth_tokens (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       token_hash TEXT NOT NULL UNIQUE,
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS rooms (
+    )`,
+    `CREATE TABLE IF NOT EXISTS rooms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       number TEXT NOT NULL UNIQUE,
       type TEXT NOT NULL,
@@ -117,28 +176,22 @@ function ensureSchema() {
       capacity INTEGER NOT NULL,
       photo TEXT NOT NULL,
       description TEXT NOT NULL
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS equipment (
+    )`,
+    `CREATE TABLE IF NOT EXISTS equipment (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       category TEXT NOT NULL,
       icon TEXT NOT NULL,
       quantity INTEGER NOT NULL DEFAULT 0
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS room_equipment (
+    )`,
+    `CREATE TABLE IF NOT EXISTS room_equipment (
       room_id INTEGER NOT NULL,
       equipment_id INTEGER NOT NULL,
       PRIMARY KEY (room_id, equipment_id),
       FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
       FOREIGN KEY (equipment_id) REFERENCES equipment(id) ON DELETE CASCADE
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS staff (
+    )`,
+    `CREATE TABLE IF NOT EXISTS staff (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL,
       role TEXT NOT NULL,
@@ -148,10 +201,8 @@ function ensureSchema() {
       status TEXT NOT NULL,
       hired_at TEXT NOT NULL,
       photo TEXT
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS menu_items (
+    )`,
+    `CREATE TABLE IF NOT EXISTS menu_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       category TEXT NOT NULL,
@@ -159,20 +210,16 @@ function ensureSchema() {
       description TEXT,
       photo TEXT,
       available INTEGER NOT NULL DEFAULT 1
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS guests (
+    )`,
+    `CREATE TABLE IF NOT EXISTS guests (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL,
       email TEXT,
       phone TEXT,
       nationality TEXT,
       notes TEXT
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS reservations (
+    )`,
+    `CREATE TABLE IF NOT EXISTS reservations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guest_id INTEGER NOT NULL,
       room_id INTEGER NOT NULL,
@@ -182,27 +229,24 @@ function ensureSchema() {
       total REAL NOT NULL,
       FOREIGN KEY (guest_id) REFERENCES guests(id),
       FOREIGN KEY (room_id) REFERENCES rooms(id)
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS services (
+    )`,
+    `CREATE TABLE IF NOT EXISTS services (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       description TEXT,
       price REAL NOT NULL,
       icon TEXT NOT NULL
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS invoices (
+    )`,
+    `CREATE TABLE IF NOT EXISTS invoices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guest_name TEXT NOT NULL,
       amount REAL NOT NULL,
       status TEXT NOT NULL,
       issued_at TEXT NOT NULL,
       label TEXT NOT NULL
-    )
-  `);
+    )`,
+  ];
+  for (const sql of statements) await db.run(sql);
 }
 
 function localDay(offset = 0) {
@@ -212,8 +256,8 @@ function localDay(offset = 0) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function seedIfEmpty() {
-  const roomsCount = Number(get('SELECT COUNT(*) AS n FROM rooms').n);
+async function seedIfEmpty(db) {
+  const roomsCount = Number((await db.get('SELECT COUNT(*) AS n FROM rooms'))?.n || 0);
   if (roomsCount > 0) return;
 
   const equipment = [
@@ -234,12 +278,8 @@ function seedIfEmpty() {
     ['Balcon', 'Espace', 'door-open', 9],
     ['Vue mer / ville', 'Espace', 'map', 7],
   ];
-
   for (const row of equipment) {
-    run(
-      'INSERT INTO equipment (name, category, icon, quantity) VALUES (?, ?, ?, ?)',
-      row,
-    );
+    await db.run('INSERT INTO equipment (name, category, icon, quantity) VALUES (?, ?, ?, ?)', row);
   }
 
   const rooms = [
@@ -256,9 +296,8 @@ function seedIfEmpty() {
     ['303', 'Deluxe', 3, 'reservee', 72000, 2, 'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=1200&q=80', 'Deluxe réservée pour une arrivée en soirée.'],
     ['304', 'Suite', 3, 'disponible', 125000, 3, 'https://images.unsplash.com/photo-1551882547-ff40c63fe5fa?w=1200&q=80', 'Suite avec balcon, minibar et espace bureau.'],
   ];
-
   for (const row of rooms) {
-    run(
+    await db.run(
       'INSERT INTO rooms (number, type, floor, status, price_night, capacity, photo, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       row,
     );
@@ -278,34 +317,29 @@ function seedIfEmpty() {
     303: [1, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14],
     304: [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15],
   };
-
-  const roomRows = all('SELECT id, number FROM rooms');
+  const roomRows = await db.all('SELECT id, number FROM rooms');
   for (const room of roomRows) {
     const ids = roomEquip[Number(room.number)] || [];
     for (const equipmentId of ids) {
-      run('INSERT OR IGNORE INTO room_equipment (room_id, equipment_id) VALUES (?, ?)', [
-        room.id,
-        equipmentId,
-      ]);
+      await db.run('INSERT OR IGNORE INTO room_equipment (room_id, equipment_id) VALUES (?, ?)', [room.id, equipmentId]);
     }
   }
 
   const staff = [
-    ['Amina Koffi', 'Réceptionniste', 'Réception', '+225 07 00 11 22', 'amina@myhotel.ci', 'actif', '2022-03-12', 'Amina+Koffi'],
-    ['Jean-Marc Yao', 'Manager d’hôtel', 'Direction', '+225 07 00 33 44', 'jeanmarc@myhotel.ci', 'actif', '2019-08-01', 'Jean-Marc+Yao'],
-    ['Fatou Diarra', 'Gouvernante', 'Étages', '+225 05 22 10 18', 'fatou@myhotel.ci', 'actif', '2021-01-20', 'Fatou+Diarra'],
-    ['Koffi Mensah', 'Agent d’étage', 'Étages', '+225 05 18 40 21', 'koffi@myhotel.ci', 'actif', '2023-06-05', 'Koffi+Mensah'],
-    ['Sarah N’Guessan', 'Chef de cuisine', 'Restauration', '+225 01 44 20 09', 'sarah@myhotel.ci', 'actif', '2020-11-15', 'Sarah+NGuessan'],
-    ['Ibrahim Traoré', 'Serveur', 'Restauration', '+225 07 55 12 90', 'ibrahim@myhotel.ci', 'conge', '2024-02-01', 'Ibrahim+Traore'],
-    ['Lucie Bamba', 'Comptable', 'Administration', '+225 27 22 45 10', 'lucie@myhotel.ci', 'actif', '2018-04-09', 'Lucie+Bamba'],
-    ['Paul Kouassi', 'Technicien', 'Maintenance', '+225 05 90 12 33', 'paul@myhotel.ci', 'actif', '2021-09-18', 'Paul+Kouassi'],
-    ['Marie Adjoua', 'Spa thérapeute', 'Bien-être', '+225 07 13 88 41', 'marie@myhotel.ci', 'actif', '2023-01-11', 'Marie+Adjoua'],
-    ['Eric Zongo', 'Bagagiste', 'Réception', '+225 01 20 77 65', 'eric@myhotel.ci', 'arret', '2024-07-22', 'Eric+Zongo'],
+    ['Amina Koffi', 'Réceptionniste', 'Réception', '+225 07 00 11 22', 'receptioniste@gmail.com', 'actif', '2022-03-12', 'Amina+Koffi'],
+    ['Jean-Marc Yao', 'Manager d’hôtel', 'Direction', '+225 07 00 33 44', 'gerant@gmail.com', 'actif', '2019-08-01', 'Jean-Marc+Yao'],
+    ['Fatou Diarra', 'Gouvernante', 'Étages', '+225 05 22 10 18', 'gouvernante@gmail.com', 'actif', '2021-01-20', 'Fatou+Diarra'],
+    ['Koffi Mensah', 'Agent d’étage', 'Étages', '+225 05 18 40 21', 'entretien@gmail.com', 'actif', '2023-06-05', 'Koffi+Mensah'],
+    ['Sarah N’Guessan', 'Chef de cuisine', 'Restauration', '+225 01 44 20 09', 'sarah@gmail.com', 'actif', '2020-11-15', 'Sarah+NGuessan'],
+    ['Ibrahim Traoré', 'Serveur', 'Restauration', '+225 07 55 12 90', 'ibrahim@gmail.com', 'conge', '2024-02-01', 'Ibrahim+Traore'],
+    ['Lucie Bamba', 'Comptable', 'Administration', '+225 27 22 45 10', 'proprietaire@gmail.com', 'actif', '2018-04-09', 'Lucie+Bamba'],
+    ['Paul Kouassi', 'Technicien', 'Maintenance', '+225 05 90 12 33', 'paul@gmail.com', 'actif', '2021-09-18', 'Paul+Kouassi'],
+    ['Marie Adjoua', 'Spa thérapeute', 'Bien-être', '+225 07 13 88 41', 'marie@gmail.com', 'actif', '2023-01-11', 'Marie+Adjoua'],
+    ['Eric Zongo', 'Bagagiste', 'Réception', '+225 01 20 77 65', 'eric@gmail.com', 'arret', '2024-07-22', 'Eric+Zongo'],
   ];
-
   for (const row of staff) {
     const photo = `https://ui-avatars.com/api/?name=${row[7]}&background=141622&color=D4AF37&size=256&bold=true`;
-    run(
+    await db.run(
       'INSERT INTO staff (full_name, role, department, phone, email, status, hired_at, photo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [...row.slice(0, 7), photo],
     );
@@ -325,12 +359,8 @@ function seedIfEmpty() {
     ['Café MyHotel', 'Boisson', 2000, 'Espresso ou allongé, grains torréfiés sur place.', 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=900&q=80'],
     ['Cocktail Coco Sunset', 'Boisson', 6000, 'Coco, ananas, citron vert et sirop de canne.', 'https://images.unsplash.com/photo-1536935338788-846bb9981813?w=900&q=80'],
   ];
-
   for (const row of dishes) {
-    run(
-      'INSERT INTO menu_items (name, category, price, description, photo, available) VALUES (?, ?, ?, ?, ?, 1)',
-      row,
-    );
+    await db.run('INSERT INTO menu_items (name, category, price, description, photo, available) VALUES (?, ?, ?, ?, ?, 1)', row);
   }
 
   const guests = [
@@ -341,10 +371,7 @@ function seedIfEmpty() {
     ['Aïcha Koné', 'aicha.kone@mail.com', '+225 07 19 44 20', 'Côte d’Ivoire', 'Anniversaire le 2e soir.'],
   ];
   for (const row of guests) {
-    run(
-      'INSERT INTO guests (full_name, email, phone, nationality, notes) VALUES (?, ?, ?, ?, ?)',
-      row,
-    );
+    await db.run('INSERT INTO guests (full_name, email, phone, nationality, notes) VALUES (?, ?, ?, ?, ?)', row);
   }
 
   const reservations = [
@@ -356,13 +383,13 @@ function seedIfEmpty() {
     [1, 4, localDay(-5), localDay(-3), 'terminee', 90000],
   ];
   for (const row of reservations) {
-    run(
+    await db.run(
       'INSERT INTO reservations (guest_id, room_id, check_in, check_out, status, total) VALUES (?, ?, ?, ?, ?, ?)',
       row,
     );
   }
-  run("UPDATE reservations SET check_in_time = '14:00', check_out_time = '08:00' WHERE room_id = 2 AND status = 'en_cours'");
-  run("UPDATE reservations SET check_in_time = '14:00', check_out_time = '09:30' WHERE room_id = 6 AND status = 'en_cours'");
+  await db.run("UPDATE reservations SET check_in_time = '14:00', check_out_time = '08:00' WHERE room_id = 2 AND status = 'en_cours'");
+  await db.run("UPDATE reservations SET check_in_time = '14:00', check_out_time = '09:30' WHERE room_id = 6 AND status = 'en_cours'");
 
   const services = [
     ['Spa & massage', 'Soin 60 minutes, huiles locales.', 25000, 'spa'],
@@ -375,7 +402,7 @@ function seedIfEmpty() {
     ['Petit-déjeuner buffet', 'Servi de 6h30 à 10h30.', 8500, 'coffee'],
   ];
   for (const row of services) {
-    run('INSERT INTO services (name, description, price, icon) VALUES (?, ?, ?, ?)', row);
+    await db.run('INSERT INTO services (name, description, price, icon) VALUES (?, ?, ?, ?)', row);
   }
 
   const invoices = [
@@ -386,82 +413,128 @@ function seedIfEmpty() {
     ['Nadia El Mansouri', 288000, 'en_retard', '2026-09-22', 'Réservation 303'],
   ];
   for (const row of invoices) {
-    run(
-      'INSERT INTO invoices (guest_name, amount, status, issued_at, label) VALUES (?, ?, ?, ?, ?)',
-      row,
-    );
+    await db.run('INSERT INTO invoices (guest_name, amount, status, issued_at, label) VALUES (?, ?, ?, ?, ?)', row);
   }
 }
 
-function seedStaffAccounts() {
+async function seedStaffAccounts(db) {
   const password = hashPassword('password123');
   const accounts = [
-    ['Amina Koffi', 'reception@myhotel.test', 'receptionist'],
-    ['Jean-Marc Yao', 'gerant@myhotel.test', 'manager'],
-    ['Koffi Mensah', 'entretien@myhotel.test', 'housekeeping'],
-    ['Fatou Diarra', 'fatou@myhotel.test', 'housekeeping'],
-    ['Lucie Bamba', 'proprio@myhotel.test', 'owner'],
+    {
+      fullName: 'Amina Koffi',
+      email: 'receptioniste@gmail.com',
+      role: 'receptionist',
+      aliases: ['reception@myhotel.test', 'amina@myhotel.ci', 'receptioniste@gamil.ocm', 'receptioniste@gamil.com'],
+    },
+    {
+      fullName: 'Jean-Marc Yao',
+      email: 'gerant@gmail.com',
+      role: 'manager',
+      aliases: ['gerant@myhotel.test', 'jeanmarc@myhotel.ci'],
+    },
+    {
+      fullName: 'Koffi Mensah',
+      email: 'entretien@gmail.com',
+      role: 'housekeeping',
+      aliases: ['entretien@myhotel.test', 'koffi@myhotel.ci'],
+    },
+    {
+      fullName: 'Fatou Diarra',
+      email: 'gouvernante@gmail.com',
+      role: 'housekeeping',
+      aliases: ['fatou@myhotel.test', 'fatou@myhotel.ci'],
+    },
+    {
+      fullName: 'Lucie Bamba',
+      email: 'proprietaire@gmail.com',
+      role: 'owner',
+      aliases: ['proprio@myhotel.test', 'admin@myhotel.test', 'lucie@myhotel.ci'],
+    },
   ];
-  for (const [fullName, email, role] of accounts) {
-    const existing = get('SELECT id FROM users WHERE email = ?', [email]);
+  for (const account of accounts) {
+    const placeholders = [account.email, ...account.aliases].map(() => '?').join(', ');
+    const existing = await db.get(
+      `SELECT id FROM users WHERE email IN (${placeholders}) OR (full_name = ? AND role = ?) LIMIT 1`,
+      [account.email, ...account.aliases, account.fullName, account.role],
+    );
     if (existing) {
-      run('UPDATE users SET role = ?, full_name = ?, password_hash = ? WHERE id = ?', [
-        role,
-        fullName,
+      await db.run('UPDATE users SET email = ?, role = ?, full_name = ?, password_hash = ? WHERE id = ?', [
+        account.email,
+        account.role,
+        account.fullName,
         password,
         existing.id,
       ]);
     } else {
-      run('INSERT INTO users (full_name, email, password_hash, role) VALUES (?, ?, ?, ?)', [
-        fullName,
-        email,
+      await db.run('INSERT INTO users (full_name, email, password_hash, role) VALUES (?, ?, ?, ?)', [
+        account.fullName,
+        account.email,
         password,
-        role,
+        account.role,
       ]);
     }
+    await db.run('UPDATE staff SET email = ? WHERE full_name = ?', [account.email, account.fullName]);
   }
-  run("UPDATE users SET role = 'owner' WHERE email = 'admin@myhotel.test'");
-  run("UPDATE users SET role = 'client' WHERE role IS NULL OR role = ''");
+  await db.run("UPDATE staff SET email = REPLACE(email, '@myhotel.ci', '@gmail.com') WHERE email LIKE '%@myhotel.ci'");
+  await db.run("UPDATE staff SET email = REPLACE(email, '@myhotel.test', '@gmail.com') WHERE email LIKE '%@myhotel.test'");
+  await db.run("UPDATE users SET role = 'client' WHERE role IS NULL OR role = ''");
 }
 
 async function openDatabase() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_FILE) && fs.existsSync(LEGACY_DB)) {
-    fs.copyFileSync(LEGACY_DB, DB_FILE);
+  const cfg = mysqlSettings();
+  const skipCreate = SERVERLESS || process.env.MYHOTEL_MYSQL_SKIP_CREATE === '1';
+  if (!skipCreate) {
+    try {
+      const admin = await mysql.createConnection({
+        host: cfg.host,
+        port: cfg.port,
+        user: cfg.user,
+        password: cfg.password,
+        ssl: cfg.ssl,
+        dateStrings: true,
+      });
+      await admin.query(
+        `CREATE DATABASE IF NOT EXISTS \`${cfg.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      );
+      await admin.end();
+    } catch (error) {
+      console.warn('MySQL CREATE DATABASE ignoré:', error instanceof Error ? error.message : error);
+    }
   }
 
-  const SQL = await initSqlJs({
-    locateFile: (file) => path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', file),
+  const pool = mysql.createPool({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: cfg.database,
+    ssl: cfg.ssl,
+    waitForConnections: true,
+    connectionLimit: SERVERLESS ? 2 : 12,
+    dateStrings: true,
+    charset: 'utf8mb4',
+    connectTimeout: 15000,
+    enableKeepAlive: true,
   });
 
-  if (fs.existsSync(DB_FILE)) {
-    db = new SQL.Database(fs.readFileSync(DB_FILE));
-  } else {
-    db = new SQL.Database();
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch {
+    /* hébergeur en lecture seule */
   }
-
-  ensureSchema();
-  ensurePmsSchema({ all, get, run });
-  seedIfEmpty();
-  seedPms({ all, get, run, lastId });
-  seedStaffAccounts();
+  const db = createApi(pool);
+  await ensureSchema(db);
+  await ensurePmsSchema(db);
+  await seedIfEmpty(db);
+  await seedPms(db);
+  await seedStaffAccounts(db);
   try {
     const { releaseExpiredStays } = require('./pms-routes');
-    releaseExpiredStays({ all, get, run });
+    await releaseExpiredStays(db);
   } catch {
     /* ignore */
   }
-  persist();
-  return {
-    all,
-    get,
-    run,
-    lastId,
-    persist,
-    hashPassword,
-    verifyPassword,
-    publicUser,
-  };
+  return db;
 }
 
 module.exports = { openDatabase, DATA_DIR };

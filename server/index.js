@@ -80,14 +80,14 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function issueToken(db, userId) {
+async function issueToken(db, userId) {
   const crypto = require('crypto');
   const raw = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 19)
     .replace('T', ' ');
-  db.run('INSERT INTO auth_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)', [
+  await db.run('INSERT INTO auth_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)', [
     userId,
     hashToken(raw),
     expires,
@@ -95,9 +95,9 @@ function issueToken(db, userId) {
   return raw;
 }
 
-function userFromToken(db, token) {
+async function userFromToken(db, token) {
   if (!token) return null;
-  return db.get(
+  return await db.get(
     `SELECT u.* FROM auth_tokens t
      INNER JOIN users u ON u.id = t.user_id
      WHERE t.token_hash = ? AND t.expires_at > datetime('now')
@@ -106,8 +106,8 @@ function userFromToken(db, token) {
   );
 }
 
-function requireUser(db, req, res) {
-  const user = userFromToken(db, bearer(req));
+async function requireUser(db, req, res) {
+  const user = await userFromToken(db, bearer(req));
   if (!user) {
     fail(res, 'Session expirée. Veuillez vous reconnecter.', 401);
     return null;
@@ -119,8 +119,8 @@ function requireUser(db, req, res) {
   return user;
 }
 
-function withEquipment(db, room, withHistory = false) {
-  const items = db.all(
+async function withEquipment(db, room, withHistory = false) {
+  const items = await db.all(
     `SELECT e.id, e.name, e.category, e.icon
      FROM room_equipment re
      JOIN equipment e ON e.id = re.equipment_id
@@ -128,10 +128,10 @@ function withEquipment(db, room, withHistory = false) {
      ORDER BY e.category, e.name`,
     [room.id],
   );
-  const photoRows = db.all('SELECT url FROM room_photos WHERE room_id = ? ORDER BY sort, id', [room.id]).map((p) => p.url);
+  const photoRows = (await db.all('SELECT url FROM room_photos WHERE room_id = ? ORDER BY sort, id', [room.id])).map((p) => p.url);
   let videoRows = [];
   try {
-    videoRows = db.all('SELECT url FROM room_videos WHERE room_id = ? ORDER BY sort, id', [room.id]).map((p) => p.url);
+    videoRows = (await db.all('SELECT url FROM room_videos WHERE room_id = ? ORDER BY sort, id', [room.id])).map((p) => p.url);
   } catch {
     videoRows = [];
   }
@@ -148,7 +148,7 @@ function withEquipment(db, room, withHistory = false) {
     video: videos[0] || room.video || null,
   };
   if (!withHistory) return payload;
-  payload.history = db.all(
+  payload.history = await db.all(
     `SELECT r.id, g.full_name AS guest_name, g.phone AS guest_phone, r.check_in, r.check_out,
             r.check_in_time, r.check_out_time, r.status, r.total
      FROM reservations r JOIN guests g ON g.id = r.guest_id
@@ -207,7 +207,7 @@ function createRequestHandler(db) {
       }
 
       if (req.method === 'GET' && pathName === '/health') {
-        ok(res, { status: 'ok', engine: 'sqlite' });
+        ok(res, { status: 'ok', engine: 'mysql' });
         return;
       }
 
@@ -217,7 +217,7 @@ function createRequestHandler(db) {
           .trim()
           .toLowerCase();
         const password = String(body.password || '');
-        const user = db.get('SELECT * FROM users WHERE email = ? LIMIT 1', [email]);
+        const user = await db.get('SELECT * FROM users WHERE email = ? LIMIT 1', [email]);
         if (!user || !db.verifyPassword(password, user.password_hash)) {
           fail(res, 'E-mail ou mot de passe incorrect.', 401);
           return;
@@ -226,9 +226,9 @@ function createRequestHandler(db) {
           fail(res, 'Ce compte a été banni. Contactez le propriétaire.', 403);
           return;
         }
-        db.run("UPDATE users SET last_login = datetime('now') WHERE id = ?", [user.id]);
-        const fresh = db.get('SELECT * FROM users WHERE id = ?', [user.id]);
-        ok(res, { user: db.publicUser(fresh), token: issueToken(db, user.id) }, 'Connexion réussie.');
+        await db.run("UPDATE users SET last_login = datetime('now') WHERE id = ?", [user.id]);
+        const fresh = await db.get('SELECT * FROM users WHERE id = ?', [user.id]);
+        ok(res, { user: db.publicUser(fresh), token: await issueToken(db, user.id) }, 'Connexion réussie.');
         return;
       }
 
@@ -257,26 +257,26 @@ function createRequestHandler(db) {
           fail(res, 'Le mot de passe doit contenir entre 8 et 72 caractères.');
           return;
         }
-        if (db.get('SELECT id FROM users WHERE email = ? LIMIT 1', [email])) {
+        if (await db.get('SELECT id FROM users WHERE email = ? LIMIT 1', [email])) {
           fail(res, 'Un compte existe déjà avec cet e-mail.', 409);
           return;
         }
 
-        db.run(
+        await db.run(
           'INSERT INTO users (full_name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
           [fullName, email, phone || null, db.hashPassword(password), 'client'],
         );
-        const user = db.get('SELECT * FROM users WHERE id = ?', [db.lastId()]);
-        db.run("UPDATE users SET last_login = datetime('now') WHERE id = ?", [user.id]);
-        db.run(
+        const user = await db.get('SELECT * FROM users WHERE id = ?', [db.lastId()]);
+        await db.run("UPDATE users SET last_login = datetime('now') WHERE id = ?", [user.id]);
+        await db.run(
           `INSERT INTO notifications (category, title, body, is_read, created_at)
            VALUES ('COMPTE', 'Nouvel inscrit', ?, 0, datetime('now'))`,
           [`${fullName} (${email}) vient de créer un compte.`],
         );
-        const fresh = db.get('SELECT * FROM users WHERE id = ?', [user.id]);
+        const fresh = await db.get('SELECT * FROM users WHERE id = ?', [user.id]);
         ok(
           res,
-          { user: db.publicUser(fresh), token: issueToken(db, user.id) },
+          { user: db.publicUser(fresh), token: await issueToken(db, user.id) },
           'Compte créé avec succès.',
           201,
         );
@@ -284,14 +284,14 @@ function createRequestHandler(db) {
       }
 
       if (req.method === 'GET' && pathName === '/auth/me') {
-        const user = requireUser(db, req, res);
+        const user = await requireUser(db, req, res);
         if (!user) return;
         ok(res, { user: db.publicUser(user) });
         return;
       }
 
       if (req.method === 'POST' && pathName === '/auth/profile') {
-        const user = requireUser(db, req, res);
+        const user = await requireUser(db, req, res);
         if (!user) return;
         const body = await readBody(req);
         const fullName = String(body.full_name ?? user.full_name).trim();
@@ -305,18 +305,18 @@ function createRequestHandler(db) {
           fail(res, 'Photo invalide ou trop lourde.');
           return;
         }
-        db.run("UPDATE users SET full_name = ?, photo = ?, updated_at = datetime('now') WHERE id = ?", [
+        await db.run("UPDATE users SET full_name = ?, photo = ?, updated_at = datetime('now') WHERE id = ?", [
           fullName,
           photo,
           user.id,
         ]);
-        const fresh = db.get('SELECT * FROM users WHERE id = ?', [user.id]);
+        const fresh = await db.get('SELECT * FROM users WHERE id = ?', [user.id]);
         ok(res, { user: db.publicUser(fresh) }, 'Profil mis à jour.');
         return;
       }
 
       if (req.method === 'POST' && pathName === '/auth/password') {
-        const user = requireUser(db, req, res);
+        const user = await requireUser(db, req, res);
         if (!user) return;
         const body = await readBody(req);
         const current = String(body.current_password || '');
@@ -329,7 +329,7 @@ function createRequestHandler(db) {
           fail(res, 'Le mot de passe doit contenir au moins 8 caractères.');
           return;
         }
-        db.run('UPDATE users SET password_hash = ?, updated_at = datetime(\'now\') WHERE id = ?', [
+        await db.run('UPDATE users SET password_hash = ?, updated_at = datetime(\'now\') WHERE id = ?', [
           db.hashPassword(next),
           user.id,
         ]);
@@ -340,56 +340,56 @@ function createRequestHandler(db) {
       if (req.method === 'POST' && pathName === '/auth/logout') {
         const token = bearer(req);
         if (token) {
-          db.run('DELETE FROM auth_tokens WHERE token_hash = ?', [hashToken(token)]);
+          await db.run('DELETE FROM auth_tokens WHERE token_hash = ?', [hashToken(token)]);
         }
         ok(res, { closed: true });
         return;
       }
 
       if (req.method === 'GET' && pathName === '/notifications') {
-        const user = requireUser(db, req, res);
+        const user = await requireUser(db, req, res);
         if (!user) return;
-        const items = db.all('SELECT * FROM notifications ORDER BY datetime(created_at) DESC, id DESC LIMIT 40');
+        const items = await db.all('SELECT * FROM notifications ORDER BY datetime(created_at) DESC, id DESC LIMIT 40');
         ok(res, {
           items: items.map((row) => ({
             ...row,
             id: Number(row.id),
             is_read: Number(row.is_read) === 1,
           })),
-          unread: Number(db.get('SELECT COUNT(*) AS n FROM notifications WHERE is_read = 0').n),
+          unread: Number((await db.get('SELECT COUNT(*) AS n FROM notifications WHERE is_read = 0')).n),
         });
         return;
       }
 
       if (req.method === 'POST' && pathName === '/notifications/read') {
-        const user = requireUser(db, req, res);
+        const user = await requireUser(db, req, res);
         if (!user) return;
         const body = await readBody(req);
         if (body.all) {
-          db.run('UPDATE notifications SET is_read = 1 WHERE is_read = 0');
+          await db.run('UPDATE notifications SET is_read = 1 WHERE is_read = 0');
         } else {
           const id = Number(body.id);
           if (!id) {
             fail(res, 'Notification invalide.');
             return;
           }
-          db.run('UPDATE notifications SET is_read = 1 WHERE id = ?', [id]);
+          await db.run('UPDATE notifications SET is_read = 1 WHERE id = ?', [id]);
         }
-        const items = db.all('SELECT * FROM notifications ORDER BY datetime(created_at) DESC, id DESC LIMIT 40');
+        const items = await db.all('SELECT * FROM notifications ORDER BY datetime(created_at) DESC, id DESC LIMIT 40');
         ok(res, {
           items: items.map((row) => ({
             ...row,
             id: Number(row.id),
             is_read: Number(row.is_read) === 1,
           })),
-          unread: Number(db.get('SELECT COUNT(*) AS n FROM notifications WHERE is_read = 0').n),
+          unread: Number((await db.get('SELECT COUNT(*) AS n FROM notifications WHERE is_read = 0')).n),
         });
         return;
       }
 
       if (req.method === 'GET' && pathName === '/dashboard') {
-        if (!requireUser(db, req, res)) return;
-        const rooms = db.get(
+        if (!await requireUser(db, req, res)) return;
+        const rooms = await db.get(
           `SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN status = 'disponible' THEN 1 ELSE 0 END) AS available,
@@ -398,17 +398,17 @@ function createRequestHandler(db) {
             SUM(CASE WHEN status = 'maintenance' THEN 1 ELSE 0 END) AS maintenance
            FROM rooms`,
         );
-        const staff = db.get(
+        const staff = await db.get(
           `SELECT COUNT(*) AS total,
             SUM(CASE WHEN status = 'actif' THEN 1 ELSE 0 END) AS active
            FROM staff`,
         );
-        const reservations = db.get(
+        const reservations = await db.get(
           `SELECT COUNT(*) AS total,
             SUM(CASE WHEN status IN ('confirmee', 'en_cours') THEN 1 ELSE 0 END) AS live
            FROM reservations`,
         );
-        const billing = db.get(
+        const billing = await db.get(
           `SELECT
             SUM(CASE WHEN status = 'payee' THEN amount ELSE 0 END) AS paid,
             SUM(CASE WHEN status != 'payee' THEN amount ELSE 0 END) AS pending
@@ -419,33 +419,35 @@ function createRequestHandler(db) {
       }
 
       if (req.method === 'GET' && pathName === '/rooms') {
-        if (!requireUser(db, req, res)) return;
+        if (!await requireUser(db, req, res)) return;
         try {
-          releaseExpiredStays(db);
+          await releaseExpiredStays(db);
         } catch {
           /* ignore */
         }
-        markReadyRoomsDisponible(db);
-        const rooms = db.all('SELECT * FROM rooms ORDER BY number').map((room) => withEquipment(db, room));
+        await markReadyRoomsDisponible(db);
+        const rooms = await Promise.all(
+          (await db.all('SELECT * FROM rooms ORDER BY number')).map((room) => withEquipment(db, room)),
+        );
         ok(res, rooms);
         return;
       }
 
       const roomMatch = pathName.match(/^\/rooms\/(\d+)$/);
       if (req.method === 'GET' && roomMatch) {
-        if (!requireUser(db, req, res)) return;
-        const room = db.get('SELECT * FROM rooms WHERE id = ?', [Number(roomMatch[1])]);
+        if (!await requireUser(db, req, res)) return;
+        const room = await db.get('SELECT * FROM rooms WHERE id = ?', [Number(roomMatch[1])]);
         if (!room) {
           fail(res, 'Chambre introuvable.', 404);
           return;
         }
-        ok(res, withEquipment(db, room, true));
+        ok(res, await withEquipment(db, room, true));
         return;
       }
 
       if (req.method === 'GET' && pathName === '/equipment') {
-        if (!requireUser(db, req, res)) return;
-        const items = db.all(
+        if (!await requireUser(db, req, res)) return;
+        const items = await db.all(
           `SELECT e.*, COUNT(re.room_id) AS rooms_count
            FROM equipment e
            LEFT JOIN room_equipment re ON re.equipment_id = e.id
@@ -457,20 +459,20 @@ function createRequestHandler(db) {
       }
 
       if (req.method === 'GET' && pathName === '/staff') {
-        if (!requireUser(db, req, res)) return;
-        ok(res, db.all('SELECT * FROM staff ORDER BY department, full_name'));
+        if (!await requireUser(db, req, res)) return;
+        ok(res, await db.all('SELECT * FROM staff ORDER BY department, full_name'));
         return;
       }
 
       if (req.method === 'GET' && pathName === '/menu') {
-        if (!requireUser(db, req, res)) return;
-        ok(res, db.all('SELECT * FROM menu_items ORDER BY category, name'));
+        if (!await requireUser(db, req, res)) return;
+        ok(res, await db.all('SELECT * FROM menu_items ORDER BY category, name'));
         return;
       }
 
       if (req.method === 'GET' && pathName === '/reservations') {
-        if (!requireUser(db, req, res)) return;
-        const rows = db.all(
+        if (!await requireUser(db, req, res)) return;
+        const rows = await db.all(
           `SELECT r.*, g.full_name AS guest_name, g.phone AS guest_phone, rm.number AS room_number, rm.type AS room_type, rm.photo AS room_photo
            FROM reservations r
            JOIN guests g ON g.id = r.guest_id
@@ -482,33 +484,35 @@ function createRequestHandler(db) {
       }
 
       if (req.method === 'GET' && pathName === '/guests') {
-        if (!requireUser(db, req, res)) return;
-        ok(res, db.all('SELECT * FROM guests ORDER BY full_name'));
+        if (!await requireUser(db, req, res)) return;
+        ok(res, await db.all('SELECT * FROM guests ORDER BY full_name'));
         return;
       }
 
       if (req.method === 'GET' && pathName === '/services') {
-        if (!requireUser(db, req, res)) return;
-        ok(res, db.all('SELECT * FROM services ORDER BY name'));
+        if (!await requireUser(db, req, res)) return;
+        ok(res, await db.all('SELECT * FROM services ORDER BY name'));
         return;
       }
 
       if (req.method === 'GET' && pathName === '/invoices') {
-        if (!requireUser(db, req, res)) return;
-        ok(res, db.all('SELECT * FROM invoices ORDER BY issued_at DESC'));
+        if (!await requireUser(db, req, res)) return;
+        ok(res, await db.all('SELECT * FROM invoices ORDER BY issued_at DESC'));
         return;
       }
 
       if (req.method === 'GET' && pathName === '/housekeeping') {
-        if (!requireUser(db, req, res)) return;
-        const rooms = db
-          .all(
-            `SELECT * FROM rooms
+        if (!await requireUser(db, req, res)) return;
+        const rooms = await Promise.all(
+          (
+            await db.all(
+              `SELECT * FROM rooms
              WHERE status IN ('nettoyage', 'maintenance', 'occupee')
              ORDER BY floor, number`,
-          )
-          .map((room) => withEquipment(db, room));
-        const team = db.all(
+            )
+          ).map((room) => withEquipment(db, room)),
+        );
+        const team = await db.all(
           `SELECT * FROM staff WHERE department IN ('Étages', 'Maintenance') ORDER BY role, full_name`,
         );
         ok(res, { rooms, team });
@@ -537,7 +541,7 @@ async function main() {
   const db = await openDatabase();
   const server = http.createServer(createRequestHandler(db));
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`MyHotel API SQLite prête sur http://localhost:${PORT}`);
+    console.log(`MyHotel API MySQL prête sur http://localhost:${PORT}`);
   });
 }
 
